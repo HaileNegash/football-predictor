@@ -71,11 +71,15 @@ object NetworkClient {
         createRetrofit().create(ApiFootballService::class.java)
     }
 
+    val moshi: com.squareup.moshi.Moshi by lazy {
+        com.squareup.moshi.Moshi.Builder().build()
+    }
+
     private fun createRetrofit(): Retrofit {
         return Retrofit.Builder()
             .baseUrl(BASE_URL)
             .client(createOkHttpClient())
-            .addConverterFactory(MoshiConverterFactory.create())
+            .addConverterFactory(MoshiConverterFactory.create(moshi))
             .build()
     }
 

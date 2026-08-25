@@ -97,3 +97,11 @@ data class PredictionResult(
     val confidence: Int,
     val rationale: String
 )
+
+data class SearchItem(
+    val id: String,
+    val name: String,
+    val subtitle: String,
+    val logoUrl: String?,
+    val type: String
+)
