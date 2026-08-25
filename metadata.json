@@ -1,0 +1,6 @@
+{
+  "name": "Football Predictor",
+  "description": "Native Android football betting predictor application optimized for legacy hardware.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
