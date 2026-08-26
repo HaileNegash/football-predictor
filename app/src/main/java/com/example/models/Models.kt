@@ -105,3 +105,33 @@ data class SearchItem(
     val logoUrl: String?,
     val type: String
 )
+
+data class Currency(
+    val code: String,
+    val symbol: String,
+    val name: String,
+    val flagEmoji: String
+)
+
+val PopularCurrencies = listOf(
+    Currency("ETB", "Br", "Ethiopian Birr", "🇪🇹"),
+    Currency("USD", "$", "US Dollar", "🇺🇸"),
+    Currency("EUR", "€", "Euro", "🇪🇺"),
+    Currency("GBP", "£", "British Pound", "🇬🇧"),
+    Currency("KES", "KSh", "Kenyan Shilling", "🇰🇪"),
+    Currency("NGN", "₦", "Nigerian Naira", "🇳🇬"),
+    Currency("ZAR", "R", "South African Rand", "🇿🇦"),
+    Currency("GHS", "GH₵", "Ghanaian Cedi", "🇬🇭"),
+    Currency("CAD", "CA$", "Canadian Dollar", "🇨🇦"),
+    Currency("AUD", "AU$", "Australian Dollar", "🇦🇺"),
+    Currency("JPY", "¥", "Japanese Yen", "🇯🇵"),
+    Currency("INR", "₹", "Indian Rupee", "🇮🇳"),
+    Currency("SAR", "SR", "Saudi Riyal", "🇸🇦"),
+    Currency("AED", "AED", "UAE Dirham", "🇦🇪"),
+    Currency("BRL", "R$", "Brazilian Real", "🇧🇷"),
+    Currency("CHF", "CHF", "Swiss Franc", "🇨🇭"),
+    Currency("CNY", "¥", "Chinese Yuan", "🇨🇳"),
+    Currency("EGP", "E£", "Egyptian Pound", "🇪🇬"),
+    Currency("UGX", "USh", "Ugandan Shilling", "🇺🇬"),
+    Currency("TZS", "TSh", "Tanzanian Shilling", "🇹🇿")
+)

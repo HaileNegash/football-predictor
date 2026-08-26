@@ -4,7 +4,10 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <uses-sdk tools:overrideLibrary="com.google.firebase, com.google.firebase.firestore, com.google.firebase.common, com.google.firebase.components, com.google.android.gms.base, com.google.android.gms.tasks, com.google.android.gms.common" />
+
     <application
+        android:name=".PredictorApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"

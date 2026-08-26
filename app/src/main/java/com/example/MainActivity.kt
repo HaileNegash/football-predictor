@@ -4,11 +4,13 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -18,6 +20,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -134,7 +137,14 @@ fun PredictorApp(viewModel: PredictorViewModel = viewModel()) {
             HomeScreen(
                 viewModel = viewModel,
                 onNavigateToSettings = { navController.navigate("settings") },
+                onNavigateToAuth = { navController.navigate("auth") },
                 onNavigateToConfig = { navController.navigate("prediction_config") }
+            )
+        }
+        composable("auth") {
+            com.example.ui.AuthScreen(
+                viewModel = viewModel,
+                onNavigateBack = { navController.popBackStack() }
             )
         }
         composable("prediction_config") {
@@ -147,7 +157,8 @@ fun PredictorApp(viewModel: PredictorViewModel = viewModel()) {
         composable("settings") {
             SettingsScreen(
                 viewModel = viewModel,
-                onNavigateBack = { navController.popBackStack() }
+                onNavigateBack = { navController.popBackStack() },
+                onNavigateToAuth = { navController.navigate("auth") }
             )
         }
     }
@@ -155,11 +166,17 @@ fun PredictorApp(viewModel: PredictorViewModel = viewModel()) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(viewModel: PredictorViewModel, onNavigateToSettings: () -> Unit, onNavigateToConfig: () -> Unit) {
+fun HomeScreen(
+    viewModel: PredictorViewModel,
+    onNavigateToSettings: () -> Unit,
+    onNavigateToAuth: () -> Unit,
+    onNavigateToConfig: () -> Unit
+) {
     val countries by viewModel.countries.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
     val currentDate by viewModel.currentDate.collectAsStateWithLifecycle()
+    val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
     var expandedCountries by remember(countries) { 
         mutableStateOf(emptySet<String>()) 
     }
@@ -208,13 +225,35 @@ fun HomeScreen(viewModel: PredictorViewModel, onNavigateToSettings: () -> Unit, 
                     ) 
                 },
                 navigationIcon = {
-                    IconButton(onClick = { viewModel.fetchFixtures(forceRefresh = true) }) {
-                        Icon(
-                            imageVector = Icons.Filled.Refresh,
-                            contentDescription = "Refresh",
-                            tint = AccentOrange,
-                            modifier = Modifier.size(26.dp)
-                        )
+                    IconButton(
+                        onClick = onNavigateToAuth,
+                        modifier = Modifier.testTag("btn_top_account")
+                    ) {
+                        if (currentUser.email != "guest@footballpredictor.app") {
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .background(
+                                        if (currentUser.tier == com.example.models.UserTier.PRO_VIP) Color(0xFFFFD600) else AccentOrange,
+                                        CircleShape
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = currentUser.displayName.take(1).uppercase(),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    color = Color.Black
+                                )
+                            }
+                        } else {
+                            Icon(
+                                imageVector = Icons.Filled.AccountCircle,
+                                contentDescription = "Account & Sign In",
+                                tint = AccentOrange,
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
                     }
                 },
                 actions = {
@@ -783,10 +822,15 @@ fun PredictionConfigScreen(
     val selectedItems by viewModel.selectedSearchItems.collectAsStateWithLifecycle()
     val availableBetTypes = viewModel.availableBetTypes
     val selectedBetTypes by viewModel.selectedBetTypes.collectAsStateWithLifecycle()
+    val selectedCurrency by viewModel.selectedCurrency.collectAsStateWithLifecycle()
+    val availableCurrencies = viewModel.availableCurrencies
+    val budget by viewModel.budget.collectAsStateWithLifecycle()
+    val moneyRange by viewModel.moneyRange.collectAsStateWithLifecycle()
     val countries by viewModel.countries.collectAsStateWithLifecycle()
     
     // Extract selected matches from selectedItems set
     var isBetTypesExpanded by remember { mutableStateOf(false) }
+    var isCurrencyListExpanded by remember { mutableStateOf(false) }
     val selectedMatchIds = selectedItems.filter { it.startsWith("match_") }.mapNotNull { it.removePrefix("match_").toIntOrNull() }.toSet()
     val selectedMatches = countries.flatMap { it.leagues }.flatMap { it.matches }.filter { it.id in selectedMatchIds }
     
@@ -802,16 +846,55 @@ fun PredictionConfigScreen(
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = AppDarkBg, titleContentColor = TextMain)
             )
         },
-        floatingActionButtonPosition = FabPosition.Center,
-        floatingActionButton = {
-            if (selectedMatches.isNotEmpty() && selectedBetTypes.isNotEmpty()) {
-                ExtendedFloatingActionButton(
-                    onClick = onPredict,
-                    containerColor = AccentOrange,
-                    contentColor = Color.White,
-                    icon = { Icon(Icons.Outlined.StarOutline, "Predict") },
-                    text = { Text("Generate Predictions", fontWeight = FontWeight.Bold) }
-                )
+        bottomBar = {
+            Surface(
+                color = CardDarkBg,
+                tonalElevation = 8.dp,
+                shadowElevation = 16.dp,
+                border = BorderStroke(1.dp, DividerColor),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .navigationBarsPadding()
+                ) {
+                    Button(
+                        onClick = onPredict,
+                        enabled = selectedBetTypes.isNotEmpty(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = AccentOrange,
+                            disabledContainerColor = Color(0xFF2E313C)
+                        ),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(54.dp)
+                            .testTag("btn_run_ai_predictions")
+                    ) {
+                        Text(
+                            text = if (selectedMatches.isNotEmpty()) {
+                                "Run AI Predictions (${selectedMatches.size} Matches)"
+                            } else {
+                                "Run AI Predictions"
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = if (selectedBetTypes.isNotEmpty()) Color.White else TextSub
+                        )
+                    }
+                    if (selectedBetTypes.isEmpty()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Please select at least one betting prediction type above",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFFFF5252),
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
             }
         },
         containerColor = AppDarkBg,
@@ -821,7 +904,7 @@ fun PredictionConfigScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding),
-            contentPadding = PaddingValues(bottom = 80.dp)
+            contentPadding = PaddingValues(bottom = 24.dp)
         ) {
             item {
                 Surface(
@@ -915,137 +998,390 @@ fun PredictionConfigScreen(
                     }
                 }
             }
-            
-            item {
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = "Selected Matches (${selectedMatches.size})",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = TextMain,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 16.dp)
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-            
+
+            // Currency Selector Section
             item {
                 Surface(
                     color = CardDarkBg,
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
                 ) {
-                    Column {
-                        if (selectedMatches.isEmpty()) {
-                            Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
-                                Text("No matches selected", color = TextSub)
-                            }
-                        } else {
-                            selectedMatches.forEachIndexed { index, match ->
-                                MatchItem(
-                                    match = match,
-                                    isSelected = selectedItems.contains("match_${match.id}"),
-                                    onToggleSelect = { viewModel.toggleSearchItemSelection("match_${match.id}") }
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { isCurrencyListExpanded = !isCurrencyListExpanded }
+                                .padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(
+                                    text = "Currency Selection",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = TextMain,
+                                    fontWeight = FontWeight.Bold
                                 )
-                                if (index < selectedMatches.size - 1) {
-                                    HorizontalDivider(color = DividerColor, thickness = 1.dp)
+                                Text(
+                                    text = "Select your preferred betting currency",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSub
+                                )
+                            }
+                            Surface(
+                                color = AccentOrange.copy(alpha = 0.15f),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "${selectedCurrency.flagEmoji} ${selectedCurrency.code} (${selectedCurrency.symbol})",
+                                        color = AccentOrange,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Icon(
+                                        imageVector = if (isCurrencyListExpanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                                        contentDescription = "Toggle Currencies",
+                                        tint = AccentOrange,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Quick horizontal chips for top currencies
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            items(availableCurrencies) { curr ->
+                                val isSelected = curr.code == selectedCurrency.code
+                                Surface(
+                                    onClick = { viewModel.selectCurrency(curr) },
+                                    color = if (isSelected) AccentOrange else Color(0xFF23262F),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(text = curr.flagEmoji, fontSize = 14.sp)
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "${curr.code} (${curr.symbol})",
+                                            color = if (isSelected) Color.White else TextSub,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        if (isCurrencyListExpanded) {
+                            Spacer(modifier = Modifier.height(14.dp))
+                            HorizontalDivider(color = DividerColor, thickness = 1.dp)
+                            Spacer(modifier = Modifier.height(10.dp))
+                            
+                            Text(
+                                text = "All Currencies",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextSub,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                availableCurrencies.forEach { curr ->
+                                    val isSelected = curr.code == selectedCurrency.code
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (isSelected) AccentOrange.copy(alpha = 0.15f) else Color.Transparent)
+                                            .clickable { viewModel.selectCurrency(curr) }
+                                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(curr.flagEmoji, fontSize = 16.sp)
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            Column {
+                                                Text(
+                                                    text = curr.name,
+                                                    color = if (isSelected) TextMain else TextSub,
+                                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                    fontSize = 13.sp
+                                                )
+                                                Text(
+                                                    text = "${curr.code} • ${curr.symbol}",
+                                                    color = if (isSelected) AccentOrange else TextSub.copy(alpha = 0.7f),
+                                                    fontSize = 11.sp
+                                                )
+                                            }
+                                        }
+                                        if (isSelected) {
+                                            Icon(
+                                                imageVector = Icons.Filled.CheckCircle,
+                                                contentDescription = "Selected",
+                                                tint = AccentOrange,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
+
+            // Budget (Stake / Bankroll) Setter Section
+            item {
+                Surface(
+                    color = CardDarkBg,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(
+                                    text = "Betting Budget / Stake",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = TextMain,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Set your total stake or bankroll limit",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSub
+                                )
+                            }
+                            Surface(
+                                color = AccentOrange.copy(alpha = 0.15f),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    text = "${selectedCurrency.symbol} ${budget.toInt()}",
+                                    color = AccentOrange,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        Slider(
+                            value = budget,
+                            onValueChange = { viewModel.updateBudget(it) },
+                            valueRange = 5f..1000f,
+                            steps = 198,
+                            colors = SliderDefaults.colors(
+                                thumbColor = AccentOrange,
+                                activeTrackColor = AccentOrange,
+                                inactiveTrackColor = Color(0xFF2E313C)
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        Text(
+                            text = "Quick Stake Presets",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextSub,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            val budgetPresets = listOf(10f, 25f, 50f, 100f, 250f, 500f)
+                            budgetPresets.forEach { presetVal ->
+                                val isSelected = budget.toInt() == presetVal.toInt()
+                                Surface(
+                                    onClick = { viewModel.updateBudget(presetVal) },
+                                    color = if (isSelected) AccentOrange else Color(0xFF23262F),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text(
+                                        text = "${selectedCurrency.symbol}${presetVal.toInt()}",
+                                        color = if (isSelected) Color.White else TextSub,
+                                        fontSize = 10.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                        textAlign = TextAlign.Center,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.padding(vertical = 8.dp, horizontal = 2.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Money Target Setter Section
+            item {
+                Surface(
+                    color = CardDarkBg,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Money Target Setter",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = TextMain,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Surface(
+                                color = AccentOrange.copy(alpha = 0.15f),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    text = "${selectedCurrency.symbol}${moneyRange.start.toInt()} - ${selectedCurrency.symbol}${moneyRange.endInclusive.toInt()}",
+                                    color = AccentOrange,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Set your desired minimum and maximum target profit / payout.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSub
+                        )
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // Target indicators
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column {
+                                Text("Min Target", style = MaterialTheme.typography.labelSmall, color = TextSub)
+                                Text(
+                                    text = "${selectedCurrency.symbol}${moneyRange.start.toInt()}",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextMain
+                                )
+                            }
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text("Max Target", style = MaterialTheme.typography.labelSmall, color = TextSub)
+                                Text(
+                                    text = "${selectedCurrency.symbol}${moneyRange.endInclusive.toInt()}",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextMain
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        RangeSlider(
+                            value = moneyRange,
+                            onValueChange = { newRange ->
+                                viewModel.updateMoneyRange(newRange)
+                            },
+                            valueRange = 5f..1000f,
+                            steps = 198,
+                            colors = SliderDefaults.colors(
+                                thumbColor = AccentOrange,
+                                activeTrackColor = AccentOrange,
+                                inactiveTrackColor = Color(0xFF2E313C)
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        Text(
+                            text = "Quick Presets",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextSub,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            val presets = listOf(
+                                "10 - 50" to (10f..50f),
+                                "25 - 100" to (25f..100f),
+                                "50 - 250" to (50f..250f),
+                                "100 - 500" to (100f..500f)
+                            )
+                            presets.forEach { (label, range) ->
+                                val isSelected = (moneyRange.start.toInt() == range.start.toInt() && moneyRange.endInclusive.toInt() == range.endInclusive.toInt())
+                                Surface(
+                                    onClick = { viewModel.updateMoneyRange(range) },
+                                    color = if (isSelected) AccentOrange else Color(0xFF23262F),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text(
+                                        text = "${selectedCurrency.symbol}$label",
+                                        color = if (isSelected) Color.White else TextSub,
+                                        fontSize = 11.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.padding(vertical = 8.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     viewModel: PredictorViewModel,
-    onNavigateBack: () -> Unit
+    onNavigateBack: () -> Unit,
+    onNavigateToAuth: () -> Unit = {}
 ) {
-    val currentKey by viewModel.apiFootballKey.collectAsStateWithLifecycle()
-    var keyInput by remember { mutableStateOf(currentKey) }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Settings", color = TextMain, fontWeight = FontWeight.Bold) },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
-                            tint = AccentOrange
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = AppDarkBg,
-                    titleContentColor = TextMain
-                )
-            )
-        },
-        modifier = Modifier.fillMaxSize(),
-        containerColor = AppDarkBg
-    ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .padding(16.dp)
-        ) {
-            Surface(
-                color = CardDarkBg,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "API Management",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = TextMain,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-                    Text(
-                        text = "Enter your API-Football API key. This will be used to fetch live fixtures and match data.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextSub,
-                        modifier = Modifier.padding(bottom = 16.dp)
-                    )
-                    OutlinedTextField(
-                        value = keyInput,
-                        onValueChange = { keyInput = it },
-                        label = { Text("API-Football Key", color = TextSub) },
-                        singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = TextMain,
-                            unfocusedTextColor = TextMain,
-                            focusedBorderColor = AccentOrange,
-                            unfocusedBorderColor = TextSub,
-                            cursorColor = AccentOrange
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    
-                    Spacer(modifier = Modifier.height(20.dp))
-                    
-                    Button(
-                        onClick = {
-                            viewModel.saveApiFootballKey(keyInput)
-                            onNavigateBack()
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = AccentOrange),
-                        shape = RoundedCornerShape(10.dp)
-                    ) {
-                        Text("SAVE KEY", color = Color.White, fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
-        }
-    }
+    com.example.ui.SettingsScreen(
+        viewModel = viewModel,
+        onNavigateBack = onNavigateBack,
+        onNavigateToAuth = onNavigateToAuth
+    )
 }
