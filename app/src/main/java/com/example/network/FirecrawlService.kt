@@ -9,6 +9,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.net.SocketTimeoutException
 import java.util.concurrent.TimeUnit
 
 object FirecrawlService {
@@ -17,14 +18,16 @@ object FirecrawlService {
 
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
-            .writeTimeout(15, TimeUnit.SECONDS)
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(45, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
             .build()
     }
 
     /**
      * Searches for match tactical news, squad injury updates, and recent team form using Firecrawl API.
+     * Includes automatic timeout protection and clean graceful fallback.
      */
     suspend fun searchMatchNews(
         homeTeam: String,
@@ -43,10 +46,11 @@ object FirecrawlService {
                 "https://api.firecrawl.dev/v1/search"
             }
 
-            val query = "$homeTeam vs $awayTeam team news injury squad lineups match preview"
+            // Concise query to optimize response time and avoid search crawler timeouts
+            val query = "$homeTeam vs $awayTeam lineup injuries form"
             val requestJson = JSONObject().apply {
                 put("query", query)
-                put("limit", 3)
+                put("limit", 2)
             }
 
             val authHeader = if (managedKey.key.startsWith("Bearer ", ignoreCase = true)) {
@@ -82,8 +86,11 @@ object FirecrawlService {
             }
 
             Result.success(summary)
+        } catch (e: SocketTimeoutException) {
+            Log.w(TAG, "Firecrawl search timed out - continuing gracefully with tactical model fallback")
+            Result.failure(Exception("Search timeout: fallback to database tactical model"))
         } catch (e: Exception) {
-            Log.e(TAG, "Firecrawl search exception: ${e.message}", e)
+            Log.w(TAG, "Firecrawl search exception: ${e.message}")
             Result.failure(e)
         }
     }

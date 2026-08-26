@@ -180,12 +180,21 @@ class KeyRotationManager(
         return healthyKeys.getOrNull(safeIndex)?.key ?: healthyKeys.first().key
     }
 
+    val activeBrainModel: String
+        get() = firebaseService.activeBrainModel ?: "qwen-3.8-max-free"
+
     /**
      * Returns the full managed key object currently active.
      */
     fun getActiveManagedKey(role: ApiRole): ManagedApiKey? {
         val activeKeyString = getActiveKey(role) ?: return null
-        return _keysByRole.value[role]?.find { it.key == activeKeyString }
+        val found = _keysByRole.value[role]?.find { it.key == activeKeyString }
+        val model = firebaseService.activeBrainModel ?: "qwen-3.8-max-free"
+        return if (found != null && role == ApiRole.OPENAI_COMPATIBLE) {
+            found.copy(modelName = model)
+        } else {
+            found
+        }
     }
 
     /**
@@ -332,6 +341,32 @@ class KeyRotationManager(
             if (isAuthError) {
                 Log.w(tag, "Key ${item.maskedKey} authentication error (401/403). Auto-rotating next key.")
                 rotateNext(role)
+            }
+        }
+    }
+
+    /**
+     * Updates the active AI model name (e.g. "qwen-3.8-max-free") for a role.
+     */
+    fun setSelectedModel(role: ApiRole, modelName: String) {
+        val currentKeys = (_keysByRole.value[role] ?: emptyList()).toMutableList()
+        if (currentKeys.isEmpty()) return
+
+        val currentIndex = _activeIndices.value[role] ?: 0
+        val safeIndex = currentIndex % currentKeys.size
+        val currentKey = currentKeys[safeIndex]
+
+        val updated = currentKey.copy(modelName = modelName)
+        currentKeys[safeIndex] = updated
+
+        val updatedMap = _keysByRole.value.toMutableMap()
+        updatedMap[role] = currentKeys
+        _keysByRole.value = updatedMap
+        saveKeysToLocal(role, currentKeys)
+
+        if (firebaseService.isFirebaseAvailable) {
+            scope.launch {
+                firebaseService.saveKey(updated)
             }
         }
     }

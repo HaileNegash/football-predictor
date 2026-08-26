@@ -11,6 +11,7 @@ import com.example.models.Match
 import com.example.models.PredictionResult
 import com.example.network.NetworkClient
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,6 +30,7 @@ import com.example.models.ApiFootballResponse
 import com.example.firebase.FirebaseDatabaseProvider
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
+import kotlinx.coroutines.tasks.await
 
 enum class CloudSyncState(val label: String) {
     IDLE("Cloud Ready"),
@@ -315,7 +317,8 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                     homeTeam = matchHome,
                     awayTeam = matchAway,
                     league = matchLeague,
-                    managedKey = openAiManagedKey
+                    managedKey = openAiManagedKey,
+                    allowedBetTypes = _selectedBetTypes.value.toList()
                 )
                 if (result.isSuccess) {
                     keyManager.reportKeySuccess(com.example.keymanager.ApiRole.OPENAI_COMPATIBLE, openAiManagedKey.key)
@@ -326,19 +329,11 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                         openAiManagedKey.key,
                         isAuthError = false
                     )
-                    PredictionResult(
-                        recommendedBet = "1X (Home or Draw)",
-                        confidence = 78,
-                        rationale = "Tactical advantage for $matchHome based on home pitch metrics."
-                    )
+                    generateSmartMockPrediction(matchHome, matchAway)
                 }
             } else {
-                delay(1200)
-                PredictionResult(
-                    recommendedBet = "Home Win",
-                    confidence = 82,
-                    rationale = "Strong home momentum and tactical offensive rating for $matchHome."
-                )
+                delay(1000)
+                generateSmartMockPrediction(matchHome, matchAway)
             }
             
             _countries.update { currentCountries ->
@@ -615,6 +610,7 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                 delay(900)
 
                 // Step 2: Firecrawl Real Web Scrape / Tactical Analysis
+                var squadIntelSummary: String? = null
                 val firecrawlKey = keyManager.getActiveManagedKey(com.example.keymanager.ApiRole.FIRECRAWL)
                 if (firecrawlKey != null && firecrawlKey.key.isNotBlank()) {
                     _batchMatchItems.update { currentList ->
@@ -626,8 +622,9 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                     }
                     val crawlResult = com.example.network.FirecrawlService.searchMatchNews(item.homeTeam, item.awayTeam, firecrawlKey)
                     if (crawlResult.isSuccess) {
+                        squadIntelSummary = crawlResult.getOrNull()
                         keyManager.reportKeySuccess(com.example.keymanager.ApiRole.FIRECRAWL, firecrawlKey.key)
-                        addLog("🔥 [Firecrawl Search OK] ${crawlResult.getOrNull()?.take(80)}...", "SEARCH")
+                        addLog("🔥 [Firecrawl Search OK] ${squadIntelSummary?.take(80)}...", "SEARCH")
                     } else {
                         keyManager.reportKeyError(com.example.keymanager.ApiRole.FIRECRAWL, firecrawlKey.key, isAuthError = false)
                         addLog("⚡ [Firecrawl] Squad Intel gathered via cached database", "SEARCH")
@@ -641,7 +638,8 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                         }
                     }
                 }
-                addLog("🧠 Synthesizing tactical probabilities with AI Engine...", "AI")
+                val brainModelName = openAiManagedKey?.modelName?.takeIf { it.isNotBlank() } ?: keyManager.activeBrainModel
+                addLog("🧠 Synthesizing tactical probabilities with AI Brain: $brainModelName...", "AI")
                 delay(600)
 
                 // Step 3: Run AI Prediction (or real OpenAI provider if available)
@@ -650,7 +648,9 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                         homeTeam = item.homeTeam,
                         awayTeam = item.awayTeam,
                         league = item.leagueName,
-                        managedKey = openAiManagedKey
+                        managedKey = openAiManagedKey.copy(modelName = brainModelName),
+                        allowedBetTypes = _selectedBetTypes.value.toList(),
+                        tacticalIntel = squadIntelSummary
                     )
                     if (result.isSuccess) {
                         keyManager.reportKeySuccess(com.example.keymanager.ApiRole.OPENAI_COMPATIBLE, openAiManagedKey.key)
@@ -698,22 +698,86 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
             _currentActivePredictingIndex.value = -1
             _isAgentRunning.value = false
             addLog("🎉 Autonomous batch prediction completed across all selected matches.", "SUCCESS")
+            
+            // Automatically build, persist, and cloud-sync the prediction slip
+            val generatedSlip = saveAndBuildSlip()
+            addLog("💾 Generated & Synced Bet Slip #${generatedSlip.slipId} to Cloud Firestore (${generatedSlip.items.size} matches, @${generatedSlip.totalCombinedOdds} combo odds)", "SUCCESS")
+        }
+    }
+
+    private fun extractBetTypeCategory(pick: String): String {
+        val lower = pick.lowercase()
+        return when {
+            lower.contains("btts") || lower.contains("both teams") -> "BTTS"
+            lower.contains("over") || lower.contains("under") || lower.contains("goals") -> "Over/Under"
+            lower.contains("double chance") || lower.contains("1x") || lower.contains("x2") || lower.contains("12") -> "Double Chance"
+            lower.contains("draw no bet") || lower.contains("dnb") -> "Draw No Bet"
+            lower.contains("handicap") || lower.contains("ah") -> "Handicap"
+            lower.contains("correct score") -> "Score"
+            lower.contains("corner") -> "Corners"
+            lower.contains("card") -> "Cards"
+            lower.contains("half time") || lower.contains("ht/ft") -> "HT/FT"
+            else -> "1X2"
         }
     }
 
     private fun generateSmartMockPrediction(home: String, away: String): PredictionResult {
-        val tips = listOf(
-            "$home to Win (1X2)" to 78,
-            "Both Teams to Score (BTTS - YES)" to 82,
-            "Over 2.5 Total Goals" to 75,
-            "$home or Draw (1X Double Chance)" to 86,
-            "Under 3.5 Total Goals" to 72
-        )
-        val picked = tips.random()
+        val selected = _selectedBetTypes.value
+        val possibleTips = mutableListOf<Triple<String, Int, String>>() // pick, conf, betType
+
+        if (selected.contains("Both Teams to Score (BTTS)")) {
+            possibleTips.add(Triple("Both Teams to Score (BTTS - YES)", 82, "BTTS"))
+            possibleTips.add(Triple("Both Teams to Score (BTTS - NO)", 74, "BTTS"))
+        }
+        if (selected.contains("Over/Under Goals")) {
+            possibleTips.add(Triple("Over 2.5 Total Goals", 78, "Over/Under"))
+            possibleTips.add(Triple("Under 2.5 Total Goals", 75, "Over/Under"))
+            possibleTips.add(Triple("Over 1.5 Total Goals", 88, "Over/Under"))
+        }
+        if (selected.contains("Double Chance (1X, 12, X2)")) {
+            possibleTips.add(Triple("$home or Draw (1X Double Chance)", 85, "Double Chance"))
+            possibleTips.add(Triple("Draw or $away (X2 Double Chance)", 76, "Double Chance"))
+        }
+        if (selected.contains("Draw No Bet (DNB)")) {
+            possibleTips.add(Triple("Draw No Bet - $home", 80, "Draw No Bet"))
+            possibleTips.add(Triple("Draw No Bet - $away", 73, "Draw No Bet"))
+        }
+        if (selected.contains("Asian Handicap") || selected.contains("European Handicap")) {
+            possibleTips.add(Triple("Asian Handicap $home -0.5", 77, "Handicap"))
+            possibleTips.add(Triple("Handicap $away (+1.5)", 81, "Handicap"))
+        }
+        if (selected.contains("1X2 (Win / Draw / Lose)")) {
+            possibleTips.add(Triple("$home to Win (1X2)", 79, "1X2"))
+            possibleTips.add(Triple("$away to Win (1X2)", 68, "1X2"))
+        }
+        if (selected.contains("Combo Bets")) {
+            possibleTips.add(Triple("$home to Win & Over 1.5 Goals", 81, "Combo"))
+            possibleTips.add(Triple("1X & Both Teams to Score", 76, "Combo"))
+        }
+
+        if (possibleTips.isEmpty()) {
+            possibleTips.add(Triple("Both Teams to Score (BTTS - YES)", 80, "BTTS"))
+            possibleTips.add(Triple("Over 2.5 Total Goals", 77, "Over/Under"))
+            possibleTips.add(Triple("$home or Draw (1X)", 84, "Double Chance"))
+        }
+
+        val picked = possibleTips.random()
+        val odds = when (picked.third) {
+            "Double Chance" -> String.format(Locale.US, "%.2f", 1.35 + (home.length % 5) * 0.08)
+            "Over/Under" -> String.format(Locale.US, "%.2f", 1.65 + (away.length % 6) * 0.10)
+            "BTTS" -> String.format(Locale.US, "%.2f", 1.75 + (home.length % 4) * 0.12)
+            "Draw No Bet" -> String.format(Locale.US, "%.2f", 1.55 + (away.length % 5) * 0.11)
+            "Handicap" -> String.format(Locale.US, "%.2f", 1.85 + (home.length % 5) * 0.15)
+            "Combo" -> String.format(Locale.US, "%.2f", 2.20 + (away.length % 6) * 0.20)
+            else -> String.format(Locale.US, "%.2f", 1.70 + (home.length % 7) * 0.14)
+        }
+
         return PredictionResult(
             recommendedBet = picked.first,
             confidence = picked.second,
-            rationale = "High expected value model: $home offensive momentum vs $away defensive transition metrics."
+            rationale = "High expected value model: $home offensive momentum vs $away defensive transition metrics.",
+            odds = odds,
+            betType = picked.third
         )
     }
 
@@ -808,21 +872,31 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                                 recommendedBet = itObj.optString("recommendedBet"),
                                 confidence = itObj.optInt("confidence", 75),
                                 rationale = itObj.optString("rationale"),
-                                simulatedOdds = itObj.optString("simulatedOdds", "1.75")
+                                simulatedOdds = itObj.optString("simulatedOdds", "1.75"),
+                                betTypeCategory = itObj.optString("betTypeCategory", extractBetTypeCategory(itObj.optString("recommendedBet")))
                             )
                         )
                     }
-                    list.add(
-                        com.example.models.SavedPredictionSlip(
-                            slipId = obj.optString("slipId"),
-                            timestamp = obj.optLong("timestamp"),
-                            dateString = obj.optString("dateString"),
-                            items = itemsList,
-                            totalMatches = obj.optInt("totalMatches", itemsList.size),
-                            averageConfidence = obj.optInt("averageConfidence", 75),
-                            totalCombinedOdds = obj.optString("totalCombinedOdds", "2.50")
+                    if (itemsList.isNotEmpty()) {
+                        list.add(
+                            com.example.models.SavedPredictionSlip(
+                                slipId = obj.optString("slipId"),
+                                timestamp = obj.optLong("timestamp"),
+                                dateString = obj.optString("dateString"),
+                                items = itemsList,
+                                totalMatches = obj.optInt("totalMatches", itemsList.size),
+                                averageConfidence = obj.optInt("averageConfidence", 75),
+                                totalCombinedOdds = obj.optString("totalCombinedOdds", "2.50"),
+                                currencyCode = obj.optString("currencyCode", _selectedCurrency.value.code),
+                                currencySymbol = obj.optString("currencySymbol", _selectedCurrency.value.symbol),
+                                budgetStake = obj.optDouble("budgetStake", _budget.value.toDouble()).toFloat(),
+                                estimatedPayout = obj.optDouble("estimatedPayout", 0.0),
+                                potentialProfit = obj.optDouble("potentialProfit", 0.0),
+                                targetMin = obj.optDouble("targetMin", _moneyRange.value.start.toDouble()).toFloat(),
+                                targetMax = obj.optDouble("targetMax", _moneyRange.value.endInclusive.toDouble()).toFloat()
+                            )
                         )
-                    )
+                    }
                 }
                 _savedSlipsHistory.value = list
                 if (_currentSlip.value == null && list.isNotEmpty()) {
@@ -837,7 +911,7 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
     private fun persistSlips() {
         try {
             val array = org.json.JSONArray()
-            _savedSlipsHistory.value.forEach { slip ->
+            _savedSlipsHistory.value.filter { it.items.isNotEmpty() }.forEach { slip ->
                 val obj = org.json.JSONObject()
                 obj.put("slipId", slip.slipId)
                 obj.put("timestamp", slip.timestamp)
@@ -845,6 +919,13 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                 obj.put("totalMatches", slip.totalMatches)
                 obj.put("averageConfidence", slip.averageConfidence)
                 obj.put("totalCombinedOdds", slip.totalCombinedOdds)
+                obj.put("currencyCode", slip.currencyCode)
+                obj.put("currencySymbol", slip.currencySymbol)
+                obj.put("budgetStake", slip.budgetStake)
+                obj.put("estimatedPayout", slip.estimatedPayout)
+                obj.put("potentialProfit", slip.potentialProfit)
+                obj.put("targetMin", slip.targetMin)
+                obj.put("targetMax", slip.targetMax)
 
                 val itemsArray = org.json.JSONArray()
                 slip.items.forEach { item ->
@@ -860,6 +941,7 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                     itObj.put("confidence", item.confidence)
                     itObj.put("rationale", item.rationale)
                     itObj.put("simulatedOdds", item.simulatedOdds)
+                    itObj.put("betTypeCategory", item.betTypeCategory)
                     itemsArray.put(itObj)
                 }
                 obj.put("items", itemsArray)
@@ -871,11 +953,14 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun saveAndBuildSlip(): com.example.models.SavedPredictionSlip {
-        val finishedItems = _batchMatchItems.value
-            .filter { it.isSelected && it.status == com.example.models.BatchItemStatus.FINISHED && it.prediction != null }
+    fun saveAndBuildSlip(): com.example.models.SavedPredictionSlip? {
+        val batchList = _batchMatchItems.value.filter { it.isSelected }
+        var finishedItems = batchList
+            .filter { it.prediction != null }
             .map { item ->
-                val randomOdds = (1.50 + (item.matchId % 9) * 0.12)
+                val pred = item.prediction!!
+                val calculatedOdds = pred.odds
+                val cat = pred.betType.ifBlank { extractBetTypeCategory(pred.recommendedBet) }
                 com.example.models.PredictedBetItem(
                     matchId = item.matchId,
                     homeTeam = item.homeTeam,
@@ -884,12 +969,70 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                     awayLogo = item.awayLogo,
                     leagueName = item.leagueName,
                     startTime = item.startTime,
-                    recommendedBet = item.prediction?.recommendedBet ?: "Double Chance",
-                    confidence = item.prediction?.confidence ?: 75,
-                    rationale = item.prediction?.rationale ?: "Positive trend indicators and xG advantage.",
-                    simulatedOdds = String.format(Locale.US, "%.2f", randomOdds)
+                    recommendedBet = pred.recommendedBet,
+                    confidence = pred.confidence,
+                    rationale = pred.rationale,
+                    simulatedOdds = calculatedOdds,
+                    betTypeCategory = cat
                 )
             }
+
+        // If batch items have no predictions yet (e.g. user jumped straight to result or finished), populate from smart model
+        if (finishedItems.isEmpty() && batchList.isNotEmpty()) {
+            finishedItems = batchList.map { item ->
+                val pred = generateSmartMockPrediction(item.homeTeam, item.awayTeam)
+                val calculatedOdds = pred.odds
+                val cat = pred.betType.ifBlank { extractBetTypeCategory(pred.recommendedBet) }
+                com.example.models.PredictedBetItem(
+                    matchId = item.matchId,
+                    homeTeam = item.homeTeam,
+                    awayTeam = item.awayTeam,
+                    homeLogo = item.homeLogo,
+                    awayLogo = item.awayLogo,
+                    leagueName = item.leagueName,
+                    startTime = item.startTime,
+                    recommendedBet = pred.recommendedBet,
+                    confidence = pred.confidence,
+                    rationale = pred.rationale,
+                    simulatedOdds = calculatedOdds,
+                    betTypeCategory = cat
+                )
+            }
+        }
+
+        // Fallback: check matches from countries that have predictions
+        if (finishedItems.isEmpty()) {
+            val countryMatches = _countries.value.flatMap { country ->
+                country.leagues.flatMap { league ->
+                    league.matches.filter { it.prediction != null }.map { match ->
+                        val pred = match.prediction!!
+                        val calculatedOdds = pred.odds
+                        val cat = pred.betType.ifBlank { extractBetTypeCategory(pred.recommendedBet) }
+                        com.example.models.PredictedBetItem(
+                            matchId = match.id,
+                            homeTeam = match.homeTeam,
+                            awayTeam = match.awayTeam,
+                            homeLogo = match.homeLogo,
+                            awayLogo = match.awayLogo,
+                            leagueName = league.name,
+                            startTime = match.startTime,
+                            recommendedBet = pred.recommendedBet,
+                            confidence = pred.confidence,
+                            rationale = pred.rationale,
+                            simulatedOdds = calculatedOdds,
+                            betTypeCategory = cat
+                        )
+                    }
+                }
+            }
+            finishedItems = countryMatches
+        }
+
+        // STRICT GUARD: Do not create 0-item empty slips!
+        if (finishedItems.isEmpty()) {
+            android.util.Log.w("PredictorViewModel", "saveAndBuildSlip: No predictions available, skipping 0-item slip creation.")
+            return _currentSlip.value
+        }
 
         val totalMatches = finishedItems.size
         val avgConf = if (totalMatches > 0) finishedItems.map { it.confidence }.average().toInt() else 0
@@ -897,7 +1040,14 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
         finishedItems.forEach {
             totalOdds *= (it.simulatedOdds.toDoubleOrNull() ?: 1.6)
         }
-        val oddsStr = String.format(Locale.US, "%.2f", totalOdds.coerceAtMost(999.0))
+        val oddsStr = String.format(Locale.US, "%.2f", totalOdds.coerceAtMost(9999.0))
+
+        val curr = _selectedCurrency.value
+        val budgetStake = _budget.value
+        val estimatedPayout = budgetStake * totalOdds
+        val potentialProfit = (estimatedPayout - budgetStake).coerceAtLeast(0.0)
+        val targetMin = _moneyRange.value.start
+        val targetMax = _moneyRange.value.endInclusive
 
         val newSlip = com.example.models.SavedPredictionSlip(
             slipId = "SLIP-${System.currentTimeMillis() % 1000000}",
@@ -906,11 +1056,18 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
             items = finishedItems,
             totalMatches = totalMatches,
             averageConfidence = avgConf,
-            totalCombinedOdds = oddsStr
+            totalCombinedOdds = oddsStr,
+            currencyCode = curr.code,
+            currencySymbol = curr.symbol,
+            budgetStake = budgetStake,
+            estimatedPayout = estimatedPayout,
+            potentialProfit = potentialProfit,
+            targetMin = targetMin,
+            targetMax = targetMax
         )
 
         _currentSlip.value = newSlip
-        _savedSlipsHistory.update { listOf(newSlip) + it }
+        _savedSlipsHistory.update { (listOf(newSlip) + it).distinctBy { s -> s.slipId }.filter { s -> s.items.isNotEmpty() } }
         persistSlips()
         syncSlipToFirestore(newSlip)
 
@@ -954,6 +1111,13 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                     "totalMatches" to slip.totalMatches,
                     "averageConfidence" to slip.averageConfidence,
                     "totalCombinedOdds" to slip.totalCombinedOdds,
+                    "currencyCode" to slip.currencyCode,
+                    "currencySymbol" to slip.currencySymbol,
+                    "budgetStake" to slip.budgetStake,
+                    "estimatedPayout" to slip.estimatedPayout,
+                    "potentialProfit" to slip.potentialProfit,
+                    "targetMin" to slip.targetMin,
+                    "targetMax" to slip.targetMax,
                     "userId" to user.userId,
                     "items" to slip.items.map { item ->
                         mapOf(
@@ -967,17 +1131,28 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                             "recommendedBet" to item.recommendedBet,
                             "confidence" to item.confidence,
                             "rationale" to item.rationale,
-                            "simulatedOdds" to item.simulatedOdds
+                            "simulatedOdds" to item.simulatedOdds,
+                            "betTypeCategory" to item.betTypeCategory
                         )
                     }
                 )
 
-                // Save to user collection and global prediction slips collection
+                // Save to user collections and global prediction slips collections
                 db.collection("users").document(user.userId)
                     .collection("prediction_slips").document(slip.slipId)
                     .set(slipMap, SetOptions.merge())
 
+                db.collection("users").document(user.userId)
+                    .collection("generated_bets").document(slip.slipId)
+                    .set(slipMap, SetOptions.merge())
+
                 db.collection("prediction_slips").document(slip.slipId)
+                    .set(slipMap, SetOptions.merge())
+
+                db.collection("generated_bets").document(slip.slipId)
+                    .set(slipMap, SetOptions.merge())
+
+                db.collection("predictions").document(slip.slipId)
                     .set(slipMap, SetOptions.merge())
 
                 _cloudSyncState.value = CloudSyncState.SYNCED
@@ -997,7 +1172,11 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 db.collection("users").document(user.userId)
                     .collection("prediction_slips").document(slipId).delete()
+                db.collection("users").document(user.userId)
+                    .collection("generated_bets").document(slipId).delete()
                 db.collection("prediction_slips").document(slipId).delete()
+                db.collection("generated_bets").document(slipId).delete()
+                db.collection("predictions").document(slipId).delete()
             } catch (e: Exception) {
                 // Ignore silent delete failure
             }
@@ -1063,12 +1242,94 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                 _lastCloudSyncTimestamp.value = now
                 prefs.edit().putLong("last_cloud_sync_time", now).apply()
 
-                onComplete(true, "Dashboard, tools & settings successfully synced to Firebase Firestore!")
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    onComplete(true, "Dashboard, tools & settings successfully synced to Firebase Firestore!")
+                }
             } catch (e: Exception) {
                 _cloudSyncState.value = CloudSyncState.ERROR
-                onComplete(false, "Firebase Sync failed: ${e.localizedMessage}")
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    onComplete(false, "Firebase Sync failed: ${e.localizedMessage}")
+                }
             }
         }
+    }
+
+    private fun parseSlipDocument(doc: com.google.firebase.firestore.DocumentSnapshot): com.example.models.SavedPredictionSlip? {
+        val itemsRaw = doc.get("items") as? List<Map<String, Any>> ?: emptyList()
+        val items = itemsRaw.map { itMap ->
+            com.example.models.PredictedBetItem(
+                matchId = (itMap["matchId"] as? Number)?.toInt() ?: 0,
+                homeTeam = itMap["homeTeam"]?.toString() ?: "",
+                awayTeam = itMap["awayTeam"]?.toString() ?: "",
+                homeLogo = itMap["homeLogo"]?.toString()?.ifBlank { null },
+                awayLogo = itMap["awayLogo"]?.toString()?.ifBlank { null },
+                leagueName = itMap["leagueName"]?.toString() ?: "",
+                startTime = itMap["startTime"]?.toString() ?: "",
+                recommendedBet = itMap["recommendedBet"]?.toString() ?: "",
+                confidence = (itMap["confidence"] as? Number)?.toInt() ?: 75,
+                rationale = itMap["rationale"]?.toString() ?: "",
+                simulatedOdds = itMap["simulatedOdds"]?.toString() ?: "1.75",
+                betTypeCategory = itMap["betTypeCategory"]?.toString() ?: extractBetTypeCategory(itMap["recommendedBet"]?.toString() ?: "")
+            )
+        }
+
+        if (items.isEmpty()) return null
+
+        val totalMatches = doc.getLong("totalMatches")?.toInt() ?: items.size
+        val totalOdds = doc.getString("totalCombinedOdds") ?: "2.50"
+        val bStake = doc.getDouble("budgetStake")?.toFloat() ?: _budget.value
+        val estPay = doc.getDouble("estimatedPayout") ?: (bStake * (totalOdds.toDoubleOrNull() ?: 2.50))
+        val potProf = doc.getDouble("potentialProfit") ?: (estPay - bStake).coerceAtLeast(0.0)
+
+        return com.example.models.SavedPredictionSlip(
+            slipId = doc.getString("slipId") ?: doc.id,
+            timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis(),
+            dateString = doc.getString("dateString") ?: "",
+            items = items,
+            totalMatches = totalMatches,
+            averageConfidence = doc.getLong("averageConfidence")?.toInt() ?: 75,
+            totalCombinedOdds = totalOdds,
+            currencyCode = doc.getString("currencyCode") ?: _selectedCurrency.value.code,
+            currencySymbol = doc.getString("currencySymbol") ?: _selectedCurrency.value.symbol,
+            budgetStake = bStake,
+            estimatedPayout = estPay,
+            potentialProfit = potProf,
+            targetMin = doc.getDouble("targetMin")?.toFloat() ?: _moneyRange.value.start,
+            targetMax = doc.getDouble("targetMax")?.toFloat() ?: _moneyRange.value.endInclusive
+        )
+    }
+
+    private fun setupLiveSlipsListener() {
+        val db = firestore ?: return
+        db.collection("generated_bets")
+            .addSnapshotListener { snapshot, error ->
+                if (error != null || snapshot == null) return@addSnapshotListener
+                val slips = snapshot.documents.mapNotNull { parseSlipDocument(it) }
+                if (slips.isNotEmpty()) {
+                    val local = _savedSlipsHistory.value
+                    val merged = (slips + local).distinctBy { it.slipId }.filter { it.items.isNotEmpty() }.sortedByDescending { it.timestamp }
+                    _savedSlipsHistory.value = merged
+                    if (_currentSlip.value == null && merged.isNotEmpty()) {
+                        _currentSlip.value = merged.first()
+                    }
+                    persistSlips()
+                }
+            }
+
+        db.collection("prediction_slips")
+            .addSnapshotListener { snapshot, error ->
+                if (error != null || snapshot == null) return@addSnapshotListener
+                val slips = snapshot.documents.mapNotNull { parseSlipDocument(it) }
+                if (slips.isNotEmpty()) {
+                    val local = _savedSlipsHistory.value
+                    val merged = (slips + local).distinctBy { it.slipId }.filter { it.items.isNotEmpty() }.sortedByDescending { it.timestamp }
+                    _savedSlipsHistory.value = merged
+                    if (_currentSlip.value == null && merged.isNotEmpty()) {
+                        _currentSlip.value = merged.first()
+                    }
+                    persistSlips()
+                }
+            }
     }
 
     fun syncFromFirebaseCloud(onComplete: (Boolean, String) -> Unit = { _, _ -> }) {
@@ -1082,107 +1343,100 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 _cloudSyncState.value = CloudSyncState.SYNCING
 
-                // 1. Fetch Cloud Slips
-                val slipsSnapshot = db.collection("users").document(user.userId)
-                    .collection("prediction_slips").get()
+                val cloudSlips = mutableListOf<com.example.models.SavedPredictionSlip>()
 
-                // Await snapshot
-                slipsSnapshot.addOnSuccessListener { querySnapshot ->
-                    val cloudSlips = mutableListOf<com.example.models.SavedPredictionSlip>()
-                    for (doc in querySnapshot.documents) {
-                        val itemsRaw = doc.get("items") as? List<Map<String, Any>> ?: emptyList()
-                        val items = itemsRaw.map { itMap ->
-                            com.example.models.PredictedBetItem(
-                                matchId = (itMap["matchId"] as? Number)?.toInt() ?: 0,
-                                homeTeam = itMap["homeTeam"]?.toString() ?: "",
-                                awayTeam = itMap["awayTeam"]?.toString() ?: "",
-                                homeLogo = itMap["homeLogo"]?.toString()?.ifBlank { null },
-                                awayLogo = itMap["awayLogo"]?.toString()?.ifBlank { null },
-                                leagueName = itMap["leagueName"]?.toString() ?: "",
-                                startTime = itMap["startTime"]?.toString() ?: "",
-                                recommendedBet = itMap["recommendedBet"]?.toString() ?: "",
-                                confidence = (itMap["confidence"] as? Number)?.toInt() ?: 75,
-                                rationale = itMap["rationale"]?.toString() ?: "",
-                                simulatedOdds = itMap["simulatedOdds"]?.toString() ?: "1.75"
-                            )
-                        }
-
-                        cloudSlips.add(
-                            com.example.models.SavedPredictionSlip(
-                                slipId = doc.getString("slipId") ?: doc.id,
-                                timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis(),
-                                dateString = doc.getString("dateString") ?: "",
-                                items = items,
-                                totalMatches = doc.getLong("totalMatches")?.toInt() ?: items.size,
-                                averageConfidence = doc.getLong("averageConfidence")?.toInt() ?: 75,
-                                totalCombinedOdds = doc.getString("totalCombinedOdds") ?: "2.50"
-                            )
-                        )
-                    }
-
-                    if (cloudSlips.isNotEmpty()) {
-                        val localSlips = _savedSlipsHistory.value
-                        val merged = (cloudSlips + localSlips).distinctBy { it.slipId }
-                            .sortedByDescending { it.timestamp }
-                        _savedSlipsHistory.value = merged
-                        if (_currentSlip.value == null && merged.isNotEmpty()) {
-                            _currentSlip.value = merged.first()
-                        }
-                        persistSlips()
-                    }
+                // 1. Fetch from root collections
+                try {
+                    val rootGeneratedSnap = db.collection("generated_bets").get().await()
+                    cloudSlips.addAll(rootGeneratedSnap.documents.mapNotNull { parseSlipDocument(it) })
+                } catch (e: Exception) {
+                    android.util.Log.d("PredictorVM", "generated_bets fetch: ${e.message}")
                 }
 
-                // 2. Fetch Dashboard Config
-                db.collection("users").document(user.userId)
-                    .collection("dashboard").document("config").get()
-                    .addOnSuccessListener { doc ->
-                        if (doc != null && doc.exists()) {
-                            val currCode = doc.getString("selectedCurrencyCode")
-                            if (!currCode.isNullOrBlank()) {
-                                availableCurrencies.find { it.code == currCode }?.let {
-                                    selectCurrency(it)
-                                }
-                            }
-                            val b = doc.getDouble("budget")?.toFloat()
-                            if (b != null) updateBudget(b)
+                try {
+                    val rootSlipsSnap = db.collection("prediction_slips").get().await()
+                    cloudSlips.addAll(rootSlipsSnap.documents.mapNotNull { parseSlipDocument(it) })
+                } catch (e: Exception) {
+                    android.util.Log.d("PredictorVM", "prediction_slips fetch: ${e.message}")
+                }
 
-                            val minT = doc.getDouble("moneyRangeMin")?.toFloat()
-                            val maxT = doc.getDouble("moneyRangeMax")?.toFloat()
-                            if (minT != null && maxT != null && minT < maxT) {
-                                updateMoneyRange(minT..maxT)
-                            }
-                            val betTypes = doc.get("selectedBetTypes") as? List<String>
-                            if (!betTypes.isNullOrEmpty()) {
-                                _selectedBetTypes.value = betTypes.toSet()
-                                prefs.edit().putStringSet("selected_bet_types", betTypes.toSet()).apply()
+                // 2. Fetch from user collections
+                try {
+                    val userSlipsSnap = db.collection("users").document(user.userId).collection("prediction_slips").get().await()
+                    cloudSlips.addAll(userSlipsSnap.documents.mapNotNull { parseSlipDocument(it) })
+                } catch (e: Exception) {
+                    android.util.Log.d("PredictorVM", "user prediction_slips fetch: ${e.message}")
+                }
+
+                if (cloudSlips.isNotEmpty()) {
+                    val localSlips = _savedSlipsHistory.value
+                    val merged = (cloudSlips + localSlips).distinctBy { it.slipId }
+                        .filter { it.items.isNotEmpty() }
+                        .sortedByDescending { it.timestamp }
+                    _savedSlipsHistory.value = merged
+                    if (_currentSlip.value == null && merged.isNotEmpty()) {
+                        _currentSlip.value = merged.first()
+                    }
+                    persistSlips()
+                }
+
+                // 3. Fetch Dashboard Config
+                try {
+                    val doc = db.collection("users").document(user.userId).collection("dashboard").document("config").get().await()
+                    if (doc != null && doc.exists()) {
+                        val currCode = doc.getString("selectedCurrencyCode")
+                        if (!currCode.isNullOrBlank()) {
+                            availableCurrencies.find { it.code == currCode }?.let {
+                                selectCurrency(it)
                             }
                         }
-                    }
+                        val b = doc.getDouble("budget")?.toFloat()
+                        if (b != null) updateBudget(b)
 
-                // 3. Fetch Custom Settings
-                db.collection("users").document(user.userId)
-                    .collection("settings").document("app_settings").get()
-                    .addOnSuccessListener { doc ->
-                        if (doc != null && doc.exists()) {
-                            doc.getString("themeMode")?.let { updateThemeMode(com.example.models.ThemeMode.fromId(it)) }
-                            doc.getString("accentColorMode")?.let { updateAccentColor(com.example.models.AccentColorMode.fromId(it)) }
-                            doc.getString("oddsFormat")?.let { updateOddsFormat(com.example.models.OddsFormat.fromId(it)) }
-                            doc.getLong("autoRefreshSec")?.toInt()?.let { updateAutoRefreshSec(it) }
-                            doc.getBoolean("showFinishedMatches")?.let { toggleShowFinished(it) }
-                            doc.getBoolean("hapticsEnabled")?.let { toggleHaptics(it) }
-                            doc.getBoolean("dataSaver")?.let { toggleDataSaver(it) }
+                        val minT = doc.getDouble("moneyRangeMin")?.toFloat()
+                        val maxT = doc.getDouble("moneyRangeMax")?.toFloat()
+                        if (minT != null && maxT != null && minT < maxT) {
+                            updateMoneyRange(minT..maxT)
+                        }
+                        val betTypes = doc.get("selectedBetTypes") as? List<String>
+                        if (!betTypes.isNullOrEmpty()) {
+                            _selectedBetTypes.value = betTypes.toSet()
+                            prefs.edit().putStringSet("selected_bet_types", betTypes.toSet()).apply()
                         }
                     }
+                } catch (e: Exception) {
+                    android.util.Log.d("PredictorVM", "config fetch: ${e.message}")
+                }
+
+                // 4. Fetch Custom Settings
+                try {
+                    val doc = db.collection("users").document(user.userId).collection("settings").document("app_settings").get().await()
+                    if (doc != null && doc.exists()) {
+                        doc.getString("themeMode")?.let { updateThemeMode(com.example.models.ThemeMode.fromId(it)) }
+                        doc.getString("accentColorMode")?.let { updateAccentColor(com.example.models.AccentColorMode.fromId(it)) }
+                        doc.getString("oddsFormat")?.let { updateOddsFormat(com.example.models.OddsFormat.fromId(it)) }
+                        doc.getLong("autoRefreshSec")?.toInt()?.let { updateAutoRefreshSec(it) }
+                        doc.getBoolean("showFinishedMatches")?.let { toggleShowFinished(it) }
+                        doc.getBoolean("hapticsEnabled")?.let { toggleHaptics(it) }
+                        doc.getBoolean("dataSaver")?.let { toggleDataSaver(it) }
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.d("PredictorVM", "settings fetch: ${e.message}")
+                }
 
                 _cloudSyncState.value = CloudSyncState.SYNCED
                 val now = System.currentTimeMillis()
                 _lastCloudSyncTimestamp.value = now
                 prefs.edit().putLong("last_cloud_sync_time", now).apply()
 
-                onComplete(true, "Cloud data and slips restored from Firebase!")
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    onComplete(true, "Cloud data and slips restored from Firebase!")
+                }
             } catch (e: Exception) {
                 _cloudSyncState.value = CloudSyncState.ERROR
-                onComplete(false, "Restore from Firebase error: ${e.localizedMessage}")
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    onComplete(false, "Restore from Firebase error: ${e.localizedMessage}")
+                }
             }
         }
     }

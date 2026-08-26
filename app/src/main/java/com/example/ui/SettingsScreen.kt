@@ -867,28 +867,88 @@ fun SettingsScreen(
                                                 )
                                             }
 
-                                            if (managedKey.availableModels.isNotEmpty()) {
-                                                Spacer(modifier = Modifier.height(8.dp))
+                                            // Show Base URL & Active Model
+                                            if (managedKey.endpointUrl.isNotBlank()) {
+                                                Spacer(modifier = Modifier.height(6.dp))
                                                 Text(
-                                                    text = "Available Models in Dashboard (${managedKey.availableModels.size}):",
+                                                    text = "BASE URL: ${managedKey.endpointUrl}",
                                                     color = TextSub,
                                                     fontSize = 10.sp,
-                                                    fontWeight = FontWeight.SemiBold
+                                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
                                                 )
-                                                Spacer(modifier = Modifier.height(4.dp))
-                                                LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                    items(managedKey.availableModels.take(8)) { model ->
+                                            }
+
+                                            if (managedKey.apiRole == com.example.keymanager.ApiRole.OPENAI_COMPATIBLE || managedKey.availableModels.isNotEmpty()) {
+                                                Spacer(modifier = Modifier.height(8.dp))
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) {
+                                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                                        Text(
+                                                            text = "Active Brain Model:",
+                                                            color = TextSub,
+                                                            fontSize = 11.sp
+                                                        )
+                                                        Spacer(modifier = Modifier.width(6.dp))
                                                         Surface(
-                                                            color = Color(0xFF262A36),
-                                                            shape = RoundedCornerShape(4.dp),
-                                                            border = BorderStroke(0.5.dp, CardBorderColor)
+                                                            color = activeAccent.copy(alpha = 0.2f),
+                                                            shape = RoundedCornerShape(6.dp),
+                                                            border = BorderStroke(1.dp, activeAccent)
                                                         ) {
                                                             Text(
-                                                                text = model,
-                                                                color = TextMain,
-                                                                fontSize = 9.sp,
-                                                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                                                text = managedKey.modelName.ifBlank { "qwen-3.8-max-free" },
+                                                                color = activeAccent,
+                                                                fontWeight = FontWeight.Bold,
+                                                                fontSize = 11.sp,
+                                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                                             )
+                                                        }
+                                                    }
+                                                }
+
+                                                if (managedKey.availableModels.isNotEmpty()) {
+                                                    Spacer(modifier = Modifier.height(8.dp))
+                                                    Text(
+                                                        text = "Select Neural Model (${managedKey.availableModels.size} available):",
+                                                        color = TextSub,
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.SemiBold
+                                                    )
+                                                    Spacer(modifier = Modifier.height(4.dp))
+                                                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                        items(managedKey.availableModels) { model ->
+                                                            val isSelected = managedKey.modelName.equals(model, ignoreCase = true)
+                                                            Surface(
+                                                                color = if (isSelected) activeAccent else Color(0xFF262A36),
+                                                                shape = RoundedCornerShape(6.dp),
+                                                                border = BorderStroke(
+                                                                    1.dp,
+                                                                    if (isSelected) activeAccent else CardBorderColor
+                                                                ),
+                                                                modifier = Modifier.clickable {
+                                                                    viewModel.keyManager.setSelectedModel(managedKey.apiRole, model)
+                                                                    coroutineScope.launch {
+                                                                        snackbarHostState.showSnackbar("Active Brain switched to: $model")
+                                                                    }
+                                                                }
+                                                            ) {
+                                                                Row(
+                                                                    verticalAlignment = Alignment.CenterVertically,
+                                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                                                ) {
+                                                                    if (isSelected) {
+                                                                        Text("✓ ", color = Color.Black, fontWeight = FontWeight.Black, fontSize = 10.sp)
+                                                                    }
+                                                                    Text(
+                                                                        text = model,
+                                                                        color = if (isSelected) Color.Black else TextMain,
+                                                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                                        fontSize = 10.sp
+                                                                    )
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                 }

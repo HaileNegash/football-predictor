@@ -95,7 +95,9 @@ data class Match(
 data class PredictionResult(
     val recommendedBet: String,
     val confidence: Int,
-    val rationale: String
+    val rationale: String,
+    val odds: String? = null,
+    val betType: String? = null
 )
 
 data class SearchItem(

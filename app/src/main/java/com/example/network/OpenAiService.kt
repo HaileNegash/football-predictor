@@ -11,6 +11,8 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.SocketTimeoutException
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 object OpenAiService {
@@ -19,43 +21,73 @@ object OpenAiService {
 
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .writeTimeout(20, TimeUnit.SECONDS)
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
             .build()
     }
 
     /**
-     * Executes a chat completion request to any OpenAI-compatible API endpoint.
+     * Executes a chat completion request to any OpenAI-compatible API endpoint with support for
+     * user-specified bet types, tactical intel, odds estimation, and confidence scoring.
      */
     suspend fun generatePrediction(
         homeTeam: String,
         awayTeam: String,
         league: String,
-        managedKey: ManagedApiKey
+        managedKey: ManagedApiKey,
+        allowedBetTypes: List<String> = emptyList(),
+        tacticalIntel: String? = null
     ): Result<PredictionResult> = withContext(Dispatchers.IO) {
         try {
             val rawEndpoint = managedKey.endpointUrl.trim().ifBlank { "https://api.openai.com/v1/" }
             val baseUrl = if (rawEndpoint.endsWith("/")) rawEndpoint else "$rawEndpoint/"
             val endpoint = if (baseUrl.endsWith("chat/completions")) baseUrl else "${baseUrl}chat/completions"
-            val model = managedKey.modelName.trim().ifBlank { "gpt-4o-mini" }
+            val model = managedKey.modelName.trim().ifBlank { "qwen-3.8-max-free" }
+
+            val betTypesSection = if (allowedBetTypes.isNotEmpty()) {
+                """
+                ALLOWED BET TYPE MARKETS (You MUST pick the best value pick strictly adhering to one of these types):
+                ${allowedBetTypes.joinToString("\n") { "- $it" }}
+                
+                Examples of market picks:
+                - Over/Under: "Over 2.5 Goals", "Under 2.5 Goals", "Over 1.5 Goals"
+                - BTTS: "Both Teams to Score (BTTS) - Yes", "Both Teams to Score - No"
+                - Double Chance: "Double Chance (1X)", "Double Chance (X2)", "Double Chance (12)"
+                - Draw No Bet: "Draw No Bet (DNB) - Home", "Draw No Bet (DNB) - Away"
+                - Asian / European Handicap: "Asian Handicap -0.5 Home", "Handicap (+1) Away"
+                - 1X2: "Home Win", "Away Win", "Draw"
+                - Combo: "Home Win & Over 1.5 Goals", "1X & Under 3.5 Goals"
+                """.trimIndent()
+            } else {
+                "ALLOWED MARKETS: 1X2, Over/Under 2.5 Goals, Both Teams to Score (BTTS), Double Chance, Draw No Bet"
+            }
+
+            val intelSection = if (!tacticalIntel.isNullOrBlank()) {
+                "\nREAL-TIME SQUAD & TACTICAL NEWS:\n$tacticalIntel\n"
+            } else ""
 
             val prompt = """
                 Analyze the upcoming football match:
                 - Home Team: $homeTeam
                 - Away Team: $awayTeam
                 - League: $league
-                
-                Provide a sports betting prediction in strictly valid JSON format with keys:
-                - "recommendedBet": (e.g. "Home Win", "Both Teams to Score (BTTS)", "Over 2.5 Goals", "Double Chance 1X")
-                - "confidence": an integer between 50 and 95
-                - "rationale": 1-2 sentence tactical and statistical reasoning
+                $intelSection
+                $betTypesSection
+
+                Respond STRICTLY in valid JSON format with the following keys:
+                - "recommendedBet": The exact bet pick (e.g. "Over 2.5 Goals", "Both Teams to Score (BTTS)", "Double Chance (1X)", "Home Win", "Draw No Bet - Away")
+                - "betType": The market type (e.g. "Over/Under", "BTTS", "Double Chance", "DNB", "Handicap", "1X2")
+                - "confidence": Integer between 55 and 95 representing probability confidence percentage
+                - "odds": Decimal odds float between 1.30 and 4.50 (e.g. 1.85, 2.10, 1.45)
+                - "rationale": 1-2 concise tactical sentences explaining the selection based on form, xG, squad news, or matchup metrics.
             """.trimIndent()
 
             val messages = JSONArray().apply {
                 put(JSONObject().apply {
                     put("role", "system")
-                    put("content", "You are an expert football tactical analyst and sports statistician. Respond strictly with a JSON object.")
+                    put("content", "You are an elite football tactical analyst, data scientist, and sports statistician. You provide high-value, calculated betting predictions matching the requested market types with strict JSON output.")
                 })
                 put(JSONObject().apply {
                     put("role", "user")
@@ -66,7 +98,7 @@ object OpenAiService {
             val requestJson = JSONObject().apply {
                 put("model", model)
                 put("messages", messages)
-                put("temperature", 0.3)
+                put("temperature", 0.35)
             }
 
             val requestBuilder = Request.Builder()
@@ -98,30 +130,56 @@ object OpenAiService {
             }
 
             val content = choices.getJSONObject(0).getJSONObject("message").getString("content")
-            
-            // Extract JSON from content
-            val parsedResult = parsePredictionJson(content)
+            val parsedResult = parsePredictionJson(content, allowedBetTypes)
             Result.success(parsedResult)
+        } catch (e: SocketTimeoutException) {
+            Log.w(TAG, "OpenAI prediction timed out for $homeTeam vs $awayTeam - switching to smart tactical model")
+            Result.failure(Exception("Model response timeout: using fallback tactical engine"))
         } catch (e: Exception) {
-            Log.e(TAG, "Error executing OpenAI prediction", e)
+            Log.e(TAG, "Error executing OpenAI prediction: ${e.message}", e)
             Result.failure(e)
         }
     }
 
-    private fun parsePredictionJson(rawText: String): PredictionResult {
+    private fun parsePredictionJson(rawText: String, allowedBetTypes: List<String>): PredictionResult {
         return try {
             val clean = rawText.substringAfter("{").substringBeforeLast("}")
             val json = JSONObject("{$clean}")
+
+            val pick = json.optString("recommendedBet", "Both Teams to Score (BTTS)")
+            val conf = json.optInt("confidence", 78).coerceIn(50, 99)
+            val rationale = json.optString("rationale", "High xG creation and favorable tactical matchup.")
+            val rawOdds = json.optDouble("odds", 0.0)
+            val oddsStr = if (rawOdds >= 1.10) {
+                String.format(Locale.US, "%.2f", rawOdds)
+            } else {
+                null
+            }
+            val betType = json.optString("betType", "").ifBlank { null }
+
             PredictionResult(
-                recommendedBet = json.optString("recommendedBet", "Home Win / Over 1.5 Goals"),
-                confidence = json.optInt("confidence", 78).coerceIn(50, 99),
-                rationale = json.optString("rationale", "Statistical edge based on recent home offensive metrics.")
+                recommendedBet = pick,
+                confidence = conf,
+                rationale = rationale,
+                odds = oddsStr,
+                betType = betType
             )
         } catch (e: Exception) {
+            val fallbackPick = if (allowedBetTypes.contains("Both Teams to Score (BTTS)")) {
+                "Both Teams to Score (BTTS)"
+            } else if (allowedBetTypes.contains("Over/Under Goals")) {
+                "Over 2.5 Goals"
+            } else if (allowedBetTypes.contains("Double Chance (1X, 12, X2)")) {
+                "Double Chance (1X)"
+            } else {
+                "Home Win"
+            }
             PredictionResult(
-                recommendedBet = "Home Win",
+                recommendedBet = fallbackPick,
                 confidence = 75,
-                rationale = rawText.take(150)
+                rationale = rawText.take(150),
+                odds = "1.85",
+                betType = "1X2"
             )
         }
     }

@@ -38,7 +38,8 @@ data class PredictedBetItem(
     val recommendedBet: String,
     val confidence: Int,
     val rationale: String,
-    val simulatedOdds: String = "1.75"
+    val simulatedOdds: String = "1.75",
+    val betTypeCategory: String = "1X2"
 )
 
 data class SavedPredictionSlip(
@@ -48,5 +49,12 @@ data class SavedPredictionSlip(
     val items: List<PredictedBetItem>,
     val totalMatches: Int,
     val averageConfidence: Int,
-    val totalCombinedOdds: String
+    val totalCombinedOdds: String,
+    val currencyCode: String = "USD",
+    val currencySymbol: String = "$",
+    val budgetStake: Float = 50f,
+    val estimatedPayout: Double = 0.0,
+    val potentialProfit: Double = 0.0,
+    val targetMin: Float = 10f,
+    val targetMax: Float = 250f
 )

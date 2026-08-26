@@ -208,14 +208,17 @@ fun PredictedBetsResultScreen(
                                 val sb = StringBuilder()
                                 sb.append("🎯 AI PREDICTED BET SLIP [${slip.slipId}]\n")
                                 sb.append("📅 ${slip.dateString}\n")
+                                sb.append("💰 Stake: ${slip.currencySymbol}${String.format(java.util.Locale.US, "%.2f", slip.budgetStake)} ${slip.currencyCode}\n")
                                 sb.append("━━━━━━━━━━━━━━━━━━━\n")
                                 slip.items.forEachIndexed { i, item ->
                                     sb.append("${i + 1}. ${item.homeTeam} vs ${item.awayTeam}\n")
-                                    sb.append("   ▶ Pick: ${item.recommendedBet} (@${item.simulatedOdds})\n")
-                                    sb.append("   Confidence: ${item.confidence}%\n")
+                                    sb.append("   ▶ Market: [${item.betTypeCategory}] ${item.recommendedBet}\n")
+                                    sb.append("   ▶ Odds: @${item.simulatedOdds} | Confidence: ${item.confidence}%\n")
                                 }
                                 sb.append("━━━━━━━━━━━━━━━━━━━\n")
-                                sb.append("Combined Odds: @${slip.totalCombinedOdds} | Avg Conf: ${slip.averageConfidence}%\n")
+                                sb.append("Combined Odds: @${slip.totalCombinedOdds}\n")
+                                sb.append("Est. Payout: ${slip.currencySymbol}${String.format(java.util.Locale.US, "%.2f", slip.estimatedPayout)} (${slip.currencyCode})\n")
+                                sb.append("Net Profit: +${slip.currencySymbol}${String.format(java.util.Locale.US, "%.2f", slip.potentialProfit)}\n")
 
                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                 val clip = ClipData.newPlainText("AI Bet Slip", sb.toString())
@@ -287,7 +290,7 @@ fun PredictedBetsResultScreen(
             contentPadding = PaddingValues(top = 12.dp, bottom = 20.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // 1. SLIP HERO STATS CAPSULE
+            // 1. SLIP HERO STATS & FINANCIAL PAYOUT CARD
             if (slip != null) {
                 item {
                     Surface(
@@ -346,11 +349,120 @@ fun PredictedBetsResultScreen(
                                     modifier = Modifier.weight(1f)
                                 )
                                 MetricPill(
-                                    title = "EST. COMBO ODDS",
+                                    title = "COMBO ODDS",
                                     value = "@${slip.totalCombinedOdds}",
                                     accentColor = CyberGold,
                                     modifier = Modifier.weight(1f)
                                 )
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            // Financial Stake & Multiplied Payout Panel
+                            Surface(
+                                color = InnerCardBg,
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, Color(0xFF252C3A)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column {
+                                            Text(
+                                                "CONFIGURED STAKE",
+                                                color = TextMuted,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                "${slip.currencySymbol}${String.format(java.util.Locale.US, "%.2f", slip.budgetStake)} ${slip.currencyCode}",
+                                                color = TextWhite,
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                        }
+
+                                        Column(horizontalAlignment = Alignment.End) {
+                                            Text(
+                                                "TARGET GOAL",
+                                                color = TextMuted,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                "${slip.currencySymbol}${String.format(java.util.Locale.US, "%.0f", slip.targetMin)} - ${slip.currencySymbol}${String.format(java.util.Locale.US, "%.0f", slip.targetMax)}",
+                                                color = CyberCyan,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                        }
+                                    }
+
+                                    HorizontalDivider(
+                                        color = Color(0xFF222836),
+                                        modifier = Modifier.padding(vertical = 8.dp)
+                                    )
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column {
+                                            Text(
+                                                "ESTIMATED PAYOUT (Stake × Odds)",
+                                                color = CyberGold,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                "${slip.currencySymbol}${String.format(java.util.Locale.US, "%.2f", slip.estimatedPayout)}",
+                                                color = CyberGold,
+                                                fontSize = 18.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                        }
+
+                                        Surface(
+                                            color = CyberEmerald.copy(alpha = 0.15f),
+                                            shape = RoundedCornerShape(8.dp),
+                                            border = BorderStroke(1.dp, CyberEmerald.copy(alpha = 0.4f))
+                                        ) {
+                                            Column(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                                horizontalAlignment = Alignment.End
+                                            ) {
+                                                Text(
+                                                    "PROFIT",
+                                                    color = CyberEmerald,
+                                                    fontSize = 8.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontFamily = FontFamily.Monospace
+                                                )
+                                                Text(
+                                                    "+${slip.currencySymbol}${String.format(java.util.Locale.US, "%.2f", slip.potentialProfit)}",
+                                                    color = CyberEmerald,
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontFamily = FontFamily.Monospace
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -401,13 +513,16 @@ fun PredictedBetsResultScreen(
                             .testTag("predicted_bet_item_${item.matchId}")
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
-                            // Top Meta Row: League, Time & Simulated Odds
+                            // Top Meta Row: Index, League, Bet Type Badge & Odds
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                ) {
                                     Surface(
                                         color = Color(0xFF1E222D),
                                         shape = RoundedCornerShape(4.dp)
@@ -433,6 +548,22 @@ fun PredictedBetsResultScreen(
                                 }
 
                                 Row(verticalAlignment = Alignment.CenterVertically) {
+                                    // Bet Type Market Badge
+                                    Surface(
+                                        color = activeAccent.copy(alpha = 0.15f),
+                                        shape = RoundedCornerShape(6.dp),
+                                        border = BorderStroke(1.dp, activeAccent.copy(alpha = 0.4f))
+                                    ) {
+                                        Text(
+                                            text = item.betTypeCategory,
+                                            color = activeAccent,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            fontFamily = FontFamily.Monospace,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(6.dp))
                                     Surface(
                                         color = CyberGold.copy(alpha = 0.15f),
                                         shape = RoundedCornerShape(6.dp),
