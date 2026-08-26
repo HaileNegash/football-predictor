@@ -38,7 +38,17 @@ enum class ApiRole(
 
     companion object {
         fun fromCode(code: String): ApiRole {
-            return entries.find { it.code.equals(code, ignoreCase = true) } ?: API_FOOTBALL
+            val upper = code.trim().uppercase()
+            return when {
+                upper == "API_FOOTBALL" || upper.contains("FOOTBALL") || upper.contains("SPORTS") -> API_FOOTBALL
+                upper == "FIRECRAWL" || upper.contains("CRAWL") || upper.contains("SCRAPER") -> FIRECRAWL
+                upper == "GEMINI" || upper.contains("GOOGLE") || upper.contains("VERTEX") -> GEMINI
+                upper == "OPENAI_COMPATIBLE" || upper.contains("OPENAI") || upper.contains("OPENROUTER") ||
+                        upper.contains("DEEPSEEK") || upper.contains("GROQ") || upper.contains("CLAUDE") ||
+                        upper.contains("ANTHROPIC") || upper.contains("OLLAMA") || upper.contains("LLM") ||
+                        upper.contains("AGNES") || upper.contains("AI") -> OPENAI_COMPATIBLE
+                else -> entries.find { it.code.equals(upper, ignoreCase = true) } ?: OPENAI_COMPATIBLE
+            }
         }
     }
 }

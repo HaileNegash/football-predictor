@@ -2,7 +2,8 @@ package com.example.keymanager
 
 import android.content.Context
 import android.util.Log
-import com.google.firebase.FirebaseApp
+import com.example.firebase.FirebaseDatabaseProvider
+import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.channels.awaitClose
@@ -15,19 +16,69 @@ class FirebaseKeyService(private val context: Context) {
     private val collectionName = "api_keys"
 
     private val firestore: FirebaseFirestore? by lazy {
-        try {
-            if (FirebaseApp.getApps(context).isEmpty()) {
-                FirebaseApp.initializeApp(context)
-            }
-            FirebaseFirestore.getInstance()
-        } catch (e: Throwable) {
-            Log.w(tag, "Firebase Firestore initialization not active (${e.message ?: "No Google Services config"}). Vault is operating in local secure mode.")
-            null
-        }
+        FirebaseDatabaseProvider.getFirestore(context, useVaultDb = true)
     }
 
     val isFirebaseAvailable: Boolean
         get() = firestore != null
+
+    private fun parseDocument(doc: DocumentSnapshot): ManagedApiKey? {
+        val id = doc.getString("id") ?: doc.id
+        val roleStr = doc.getString("role") ?: "API_FOOTBALL"
+        val key = doc.getString("key") ?: doc.getString("apiKey") ?: doc.getString("token") ?: return null
+        if (key.isBlank()) return null
+
+        val label = doc.getString("label") ?: doc.getString("name") ?: "Cloud Key"
+        val status = doc.getString("status") ?: KeyStatus.ACTIVE.name
+        val usageCount = doc.getLong("usageCount")?.toInt() ?: 0
+        val errorCount = doc.getLong("errorCount")?.toInt() ?: 0
+        val lastUsedTimestamp = doc.getLong("lastUsedTimestamp") ?: 0L
+        val rateLimitedUntil = doc.getLong("rateLimitedUntil") ?: 0L
+        val createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis()
+        
+        // Parse models array if present (e.g. agnes, claude, deepseek)
+        val availableModels: List<String> = try {
+            (doc.get("availableModels") as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+        val lastTestMessage = doc.getString("lastTestMessage")
+        val lastTestStatus = doc.getString("lastTestStatus")
+        val lastTestedAt = doc.getLong("lastTestedAt") ?: 0L
+
+        val endpointUrl = doc.getString("endpointUrl") ?: when {
+            roleStr.contains("FIRECRAWL", ignoreCase = true) -> "https://api.firecrawl.dev/v1/search"
+            roleStr.contains("GEMINI", ignoreCase = true) -> "https://generativelanguage.googleapis.com/v1beta/"
+            availableModels.any { it.contains("claude", ignoreCase = true) || it.contains("agnes", ignoreCase = true) || it.contains("deepseek", ignoreCase = true) } -> "https://openrouter.ai/api/v1/"
+            else -> "https://api.openai.com/v1/"
+        }
+
+        val modelName = doc.getString("modelName") ?: if (availableModels.isNotEmpty()) {
+            availableModels.first()
+        } else {
+            "gpt-4o-mini"
+        }
+
+        return ManagedApiKey(
+            id = id,
+            role = roleStr,
+            key = key,
+            label = label,
+            status = status,
+            usageCount = usageCount,
+            errorCount = errorCount,
+            lastUsedTimestamp = lastUsedTimestamp,
+            rateLimitedUntil = rateLimitedUntil,
+            createdAt = createdAt,
+            endpointUrl = endpointUrl,
+            modelName = modelName,
+            lastTestMessage = lastTestMessage,
+            lastTestStatus = lastTestStatus,
+            lastTestedAt = lastTestedAt,
+            availableModels = availableModels
+        )
+    }
 
     suspend fun saveKey(apiKey: ManagedApiKey): Result<Unit> {
         val db = firestore ?: return Result.failure(Exception("Firebase Firestore is not initialized on this device"))
@@ -45,6 +96,10 @@ class FirebaseKeyService(private val context: Context) {
                 "createdAt" to apiKey.createdAt,
                 "endpointUrl" to apiKey.endpointUrl,
                 "modelName" to apiKey.modelName,
+                "lastTestMessage" to (apiKey.lastTestMessage ?: "Key stored in Firestore"),
+                "lastTestStatus" to (apiKey.lastTestStatus ?: "ACTIVE"),
+                "lastTestedAt" to if (apiKey.lastTestedAt > 0) apiKey.lastTestedAt else System.currentTimeMillis(),
+                "availableModels" to apiKey.availableModels,
                 "updatedAt" to System.currentTimeMillis()
             )
             db.collection(collectionName).document(apiKey.id).set(keyMap, SetOptions.merge()).await()
@@ -70,35 +125,8 @@ class FirebaseKeyService(private val context: Context) {
         val db = firestore ?: return Result.failure(Exception("Firebase Firestore is not initialized"))
         return try {
             val snapshot = db.collection(collectionName).get().await()
-            val keys = snapshot.documents.mapNotNull { doc ->
-                val id = doc.getString("id") ?: doc.id
-                val role = doc.getString("role") ?: ApiRole.API_FOOTBALL.code
-                val key = doc.getString("key") ?: return@mapNotNull null
-                val label = doc.getString("label") ?: "Key"
-                val status = doc.getString("status") ?: KeyStatus.ACTIVE.name
-                val usageCount = doc.getLong("usageCount")?.toInt() ?: 0
-                val errorCount = doc.getLong("errorCount")?.toInt() ?: 0
-                val lastUsedTimestamp = doc.getLong("lastUsedTimestamp") ?: 0L
-                val rateLimitedUntil = doc.getLong("rateLimitedUntil") ?: 0L
-                val createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis()
-                val endpointUrl = doc.getString("endpointUrl") ?: "https://api.openai.com/v1/"
-                val modelName = doc.getString("modelName") ?: "gpt-4o-mini"
-
-                ManagedApiKey(
-                    id = id,
-                    role = role,
-                    key = key,
-                    label = label,
-                    status = status,
-                    usageCount = usageCount,
-                    errorCount = errorCount,
-                    lastUsedTimestamp = lastUsedTimestamp,
-                    rateLimitedUntil = rateLimitedUntil,
-                    createdAt = createdAt,
-                    endpointUrl = endpointUrl,
-                    modelName = modelName
-                )
-            }
+            val keys = snapshot.documents.mapNotNull { doc -> parseDocument(doc) }
+            Log.i(tag, "Fetched ${keys.size} keys from Cloud Firestore collection '$collectionName'")
             Result.success(keys)
         } catch (e: Exception) {
             Log.e(tag, "Failed to fetch keys from Firestore", e)
@@ -122,35 +150,8 @@ class FirebaseKeyService(private val context: Context) {
                 }
 
                 if (snapshot != null) {
-                    val keys = snapshot.documents.mapNotNull { doc ->
-                        val id = doc.getString("id") ?: doc.id
-                        val role = doc.getString("role") ?: ApiRole.API_FOOTBALL.code
-                        val key = doc.getString("key") ?: return@mapNotNull null
-                        val label = doc.getString("label") ?: "Key"
-                        val status = doc.getString("status") ?: KeyStatus.ACTIVE.name
-                        val usageCount = doc.getLong("usageCount")?.toInt() ?: 0
-                        val errorCount = doc.getLong("errorCount")?.toInt() ?: 0
-                        val lastUsedTimestamp = doc.getLong("lastUsedTimestamp") ?: 0L
-                        val rateLimitedUntil = doc.getLong("rateLimitedUntil") ?: 0L
-                        val createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis()
-                        val endpointUrl = doc.getString("endpointUrl") ?: "https://api.openai.com/v1/"
-                        val modelName = doc.getString("modelName") ?: "gpt-4o-mini"
-
-                        ManagedApiKey(
-                            id = id,
-                            role = role,
-                            key = key,
-                            label = label,
-                            status = status,
-                            usageCount = usageCount,
-                            errorCount = errorCount,
-                            lastUsedTimestamp = lastUsedTimestamp,
-                            rateLimitedUntil = rateLimitedUntil,
-                            createdAt = createdAt,
-                            endpointUrl = endpointUrl,
-                            modelName = modelName
-                        )
-                    }
+                    val keys = snapshot.documents.mapNotNull { doc -> parseDocument(doc) }
+                    Log.i(tag, "Live Firestore snapshot: received ${keys.size} keys")
                     trySend(keys)
                 }
             }

@@ -23,10 +23,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Cached
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.DeleteOutline
+import com.example.viewmodel.CloudSyncState
 import androidx.compose.material.icons.filled.FormatQuote
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.NotificationsActive
@@ -94,6 +100,14 @@ fun SettingsScreen(
 ) {
     val customSettings by viewModel.customSettings.collectAsStateWithLifecycle()
     val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
+    val cloudSyncState by viewModel.cloudSyncState.collectAsStateWithLifecycle()
+    val lastCloudSyncTimestamp by viewModel.lastCloudSyncTimestamp.collectAsStateWithLifecycle()
+    val savedSlips by viewModel.savedSlipsHistory.collectAsStateWithLifecycle()
+    val keysByRole by viewModel.keyManager.keysByRole.collectAsStateWithLifecycle()
+    val activeIndices by viewModel.keyManager.activeIndices.collectAsStateWithLifecycle()
+    val isKeySyncing by viewModel.keyManager.isCloudSyncing.collectAsStateWithLifecycle()
+    val keySyncStatus by viewModel.keyManager.lastSyncStatus.collectAsStateWithLifecycle()
+    val allLoadedKeys = keysByRole.values.flatten()
     val activeAccent = customSettings.accentColorMode.color
     val activeBg = customSettings.themeMode.bgColor
     val activeCardBg = customSettings.themeMode.cardColor
@@ -481,7 +495,414 @@ fun SettingsScreen(
                 }
             }
 
-            // 3. Storage & Diagnostics
+            // 3. Firebase Cloud & Dashboard Tools Synchronization
+            item {
+                SettingsSectionHeader(
+                    icon = Icons.Filled.CloudSync,
+                    title = "FIREBASE CLOUD & DASHBOARD TOOLS",
+                    accentColor = activeAccent
+                )
+            }
+
+            item {
+                Surface(
+                    color = activeCardBg,
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.dp, CardBorderColor),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Surface(
+                                    color = activeAccent.copy(alpha = 0.15f),
+                                    shape = CircleShape,
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Cloud,
+                                            contentDescription = null,
+                                            tint = activeAccent,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        text = "Firebase Firestore Sync",
+                                        color = TextMain,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp
+                                    )
+                                    Text(
+                                        text = "Project: ai-football-predictor-3daad",
+                                        color = TextSub,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+
+                            Surface(
+                                color = when (cloudSyncState) {
+                                    CloudSyncState.SYNCED -> Color(0xFF00E676).copy(alpha = 0.15f)
+                                    CloudSyncState.SYNCING -> activeAccent.copy(alpha = 0.15f)
+                                    else -> Color(0xFF262A36)
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(
+                                    1.dp,
+                                    when (cloudSyncState) {
+                                        CloudSyncState.SYNCED -> Color(0xFF00E676)
+                                        CloudSyncState.SYNCING -> activeAccent
+                                        else -> Color.Transparent
+                                    }
+                                )
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (cloudSyncState == CloudSyncState.SYNCING) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(10.dp),
+                                            color = activeAccent,
+                                            strokeWidth = 1.5.dp
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                    }
+                                    Text(
+                                        text = cloudSyncState.label,
+                                        color = when (cloudSyncState) {
+                                            CloudSyncState.SYNCED -> Color(0xFF00E676)
+                                            CloudSyncState.SYNCING -> activeAccent
+                                            else -> TextSub
+                                        },
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "Syncs your custom dashboard betting budgets, currency selection, custom prediction weights, tools key configuration, and accumulator bet slips across all your devices via Firebase.",
+                            color = TextSub,
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Stats bar
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFF1E222B), RoundedCornerShape(10.dp))
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text("Slips Backed Up", color = TextSub, fontSize = 10.sp)
+                                Text("${savedSlips.size} slips", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text("Last Synced", color = TextSub, fontSize = 10.sp)
+                                Text(
+                                    text = if (lastCloudSyncTimestamp > 0) {
+                                        java.text.SimpleDateFormat("MMM dd • HH:mm", java.util.Locale.getDefault()).format(java.util.Date(lastCloudSyncTimestamp))
+                                    } else "Just now",
+                                    color = activeAccent,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // Sync & Restore Action Buttons
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    viewModel.syncDashboardAndToolsToFirestore { success, msg ->
+                                        coroutineScope.launch {
+                                            snackbarHostState.showSnackbar(msg)
+                                        }
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = activeAccent),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("btn_sync_dashboard_to_cloud")
+                            ) {
+                                Icon(imageVector = Icons.Filled.CloudUpload, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.Black)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Sync to Cloud", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+
+                            Button(
+                                onClick = {
+                                    viewModel.syncFromFirebaseCloud { success, msg ->
+                                        coroutineScope.launch {
+                                            snackbarHostState.showSnackbar(msg)
+                                        }
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF262A36)),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("btn_restore_from_cloud")
+                            ) {
+                                Icon(imageVector = Icons.Filled.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp), tint = TextMain)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Restore Data", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. Cloud API Key Vault & Rotation Hub
+            item {
+                SettingsSectionHeader(
+                    icon = Icons.Filled.CloudSync,
+                    title = "CLOUD API KEY VAULT (FIRESTORE REAL)",
+                    accentColor = activeAccent
+                )
+            }
+
+            item {
+                Surface(
+                    color = activeCardBg,
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.dp, CardBorderColor),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Surface(
+                                    color = Color(0xFFFF9800).copy(alpha = 0.15f),
+                                    shape = CircleShape,
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text("🔐", fontSize = 18.sp)
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        text = "Active Cloud Key Vault",
+                                        color = TextMain,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp
+                                    )
+                                    Text(
+                                        text = "Database: ai-studio-aibrainkeyvault...",
+                                        color = TextSub,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+
+                            Button(
+                                onClick = {
+                                    viewModel.keyManager.triggerCloudSync()
+                                    coroutineScope.launch {
+                                        snackbarHostState.showSnackbar("Synchronizing keys with Cloud Firestore vault...")
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = activeAccent.copy(alpha = 0.2f)),
+                                border = BorderStroke(1.dp, activeAccent),
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.testTag("btn_sync_keys_firestore")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Refresh,
+                                    contentDescription = null,
+                                    tint = activeAccent,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Sync Keys", color = activeAccent, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "Live credentials synced directly with your Firebase Firestore database. Automatic rotation and health detection are active.",
+                            color = TextSub,
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Keys Display List
+                        if (allLoadedKeys.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(Color(0xFF1E222B), RoundedCornerShape(10.dp))
+                                    .padding(14.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(20.dp),
+                                        color = activeAccent,
+                                        strokeWidth = 2.dp
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = keySyncStatus ?: "Listening for Firestore keys...",
+                                        color = TextSub,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        } else {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                allLoadedKeys.forEach { managedKey ->
+                                    val isRoleActive = managedKey.status == "ACTIVE"
+                                    val isCurrentRoleKey = viewModel.keyManager.getActiveManagedKey(managedKey.apiRole)?.id == managedKey.id
+
+                                    Surface(
+                                        color = if (isCurrentRoleKey) activeAccent.copy(alpha = 0.08f) else Color(0xFF1E222B),
+                                        shape = RoundedCornerShape(10.dp),
+                                        border = BorderStroke(
+                                            1.dp,
+                                            if (isCurrentRoleKey) activeAccent.copy(alpha = 0.5f) else CardBorderColor
+                                        ),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(modifier = Modifier.padding(12.dp)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Text(managedKey.apiRole.iconEmoji, fontSize = 16.sp)
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Column {
+                                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                                            Text(
+                                                                text = managedKey.label,
+                                                                color = TextMain,
+                                                                fontWeight = FontWeight.Bold,
+                                                                fontSize = 13.sp
+                                                            )
+                                                            if (isCurrentRoleKey) {
+                                                                Spacer(modifier = Modifier.width(6.dp))
+                                                                Surface(
+                                                                    color = activeAccent,
+                                                                    shape = RoundedCornerShape(4.dp)
+                                                                ) {
+                                                                    Text(
+                                                                        text = "ACTIVE IN USE",
+                                                                        color = Color.Black,
+                                                                        fontWeight = FontWeight.Black,
+                                                                        fontSize = 9.sp,
+                                                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                                                    )
+                                                                }
+                                                            }
+                                                        }
+                                                        Text(
+                                                            text = "${managedKey.role} • ${managedKey.maskedKey}",
+                                                            color = TextSub,
+                                                            fontSize = 11.sp
+                                                        )
+                                                    }
+                                                }
+
+                                                Surface(
+                                                    color = when {
+                                                        managedKey.isCoolingDown -> Color(0xFFFF9800).copy(alpha = 0.2f)
+                                                        isRoleActive -> Color(0xFF00E676).copy(alpha = 0.2f)
+                                                        else -> Color(0xFFFF5252).copy(alpha = 0.2f)
+                                                    },
+                                                    shape = RoundedCornerShape(6.dp)
+                                                ) {
+                                                    Text(
+                                                        text = if (managedKey.isCoolingDown) "COOLDOWN" else managedKey.status,
+                                                        color = when {
+                                                            managedKey.isCoolingDown -> Color(0xFFFF9800)
+                                                            isRoleActive -> Color(0xFF00E676)
+                                                            else -> Color(0xFFFF5252)
+                                                        },
+                                                        fontWeight = FontWeight.Bold,
+                                                        fontSize = 10.sp,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                                                    )
+                                                }
+                                            }
+
+                                            if (!managedKey.lastTestMessage.isNullOrBlank()) {
+                                                Spacer(modifier = Modifier.height(6.dp))
+                                                Text(
+                                                    text = "✓ ${managedKey.lastTestMessage}",
+                                                    color = Color(0xFF81C784),
+                                                    fontSize = 11.sp
+                                                )
+                                            }
+
+                                            if (managedKey.availableModels.isNotEmpty()) {
+                                                Spacer(modifier = Modifier.height(8.dp))
+                                                Text(
+                                                    text = "Available Models in Dashboard (${managedKey.availableModels.size}):",
+                                                    color = TextSub,
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                                Spacer(modifier = Modifier.height(4.dp))
+                                                LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                    items(managedKey.availableModels.take(8)) { model ->
+                                                        Surface(
+                                                            color = Color(0xFF262A36),
+                                                            shape = RoundedCornerShape(4.dp),
+                                                            border = BorderStroke(0.5.dp, CardBorderColor)
+                                                        ) {
+                                                            Text(
+                                                                text = model,
+                                                                color = TextMain,
+                                                                fontSize = 9.sp,
+                                                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 4. Storage & Diagnostics
             item {
                 SettingsSectionHeader(
                     icon = Icons.Filled.Storage,

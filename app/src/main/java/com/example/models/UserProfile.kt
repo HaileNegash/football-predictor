@@ -20,8 +20,8 @@ data class UserProfile(
     val joinedAt: Long = System.currentTimeMillis()
 ) {
     val remainingPredictions: Int
-        get() = if (tier == UserTier.PRO_VIP) 999 else (dailyLimit - dailyPredictionsUsed).coerceAtLeast(0)
+        get() = 999 // Unlimited access (limit removed)
 
     val isLimitReached: Boolean
-        get() = tier != UserTier.PRO_VIP && remainingPredictions <= 0
+        get() = false // Unlimited access (limit removed)
 }

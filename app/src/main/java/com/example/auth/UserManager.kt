@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.example.models.UserProfile
 import com.example.models.UserTier
+import com.example.firebase.FirebaseDatabaseProvider
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.CoroutineScope
@@ -23,11 +24,7 @@ class UserManager(private val context: Context) {
 
     private val scope = CoroutineScope(Dispatchers.IO)
     private val firestore: FirebaseFirestore? by lazy {
-        try {
-            FirebaseFirestore.getInstance()
-        } catch (e: Exception) {
-            null
-        }
+        FirebaseDatabaseProvider.getFirestore(context, useVaultDb = true)
     }
 
     private val _currentUser = MutableStateFlow(loadStoredUser())
@@ -240,17 +237,11 @@ class UserManager(private val context: Context) {
 
     fun consumePredictionQuota(): Boolean {
         val user = _currentUser.value
-        if (user.tier == UserTier.PRO_VIP) {
-            return true // unlimited
-        }
-        if (user.remainingPredictions <= 0) {
-            return false // quota exhausted
-        }
         val updated = user.copy(dailyPredictionsUsed = user.dailyPredictionsUsed + 1)
         saveUserLocal(updated)
         _currentUser.value = updated
         syncUserToCloud(updated)
-        return true
+        return true // Unlimited predictions enabled
     }
 
     private fun syncUserToCloud(user: UserProfile) {

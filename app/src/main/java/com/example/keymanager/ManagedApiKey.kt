@@ -22,7 +22,11 @@ data class ManagedApiKey(
     val rateLimitedUntil: Long = 0L,
     val createdAt: Long = System.currentTimeMillis(),
     val endpointUrl: String = "https://api.openai.com/v1/",
-    val modelName: String = "gpt-4o-mini"
+    val modelName: String = "gpt-4o-mini",
+    val lastTestMessage: String? = null,
+    val lastTestStatus: String? = null,
+    val lastTestedAt: Long = 0L,
+    val availableModels: List<String> = emptyList()
 ) {
     val apiRole: ApiRole get() = ApiRole.fromCode(role)
     val keyStatus: KeyStatus get() = try { KeyStatus.valueOf(status) } catch(e: Exception) { KeyStatus.ACTIVE }

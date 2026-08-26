@@ -45,6 +45,19 @@ class KeyRotationManager(
     init {
         loadKeysFromLocal()
         observeCloudUpdates()
+        // Immediate cloud fetch on start
+        if (firebaseService.isFirebaseAvailable) {
+            scope.launch {
+                val result = firebaseService.fetchAllKeys()
+                if (result.isSuccess) {
+                    val keys = result.getOrNull() ?: emptyList()
+                    if (keys.isNotEmpty()) {
+                        mergeCloudKeys(keys)
+                        _lastSyncStatus.value = "Cloud Active (${keys.size} keys)"
+                    }
+                }
+            }
+        }
     }
 
     private fun loadKeysFromLocal() {

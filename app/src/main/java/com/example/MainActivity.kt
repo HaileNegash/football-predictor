@@ -23,6 +23,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PushPin
@@ -74,6 +75,7 @@ val DividerColor = Color(0xFF23262F)      // Dark dividers
 val TextMain = Color(0xFFFFFFFF)          // Crisp white text
 val TextSub = Color(0xFF8E929D)           // Muted secondary text
 val AccentOrange = Color(0xFFF36621)      // Vivid Sports Orange
+val AccentGreen = Color(0xFF00E676)       // Vivid Emerald Green
 val UnselectedIndicator = Color(0xFF484C58) // Circle unselected border
 val PredictBg = Color(0xFF251A14)         // Deep orange tint for prediction cards
 
@@ -137,8 +139,16 @@ fun PredictorApp(viewModel: PredictorViewModel = viewModel()) {
             HomeScreen(
                 viewModel = viewModel,
                 onNavigateToSettings = { navController.navigate("settings") },
+                onNavigateToHistory = { navController.navigate("bets_history") },
                 onNavigateToAuth = { navController.navigate("auth") },
                 onNavigateToConfig = { navController.navigate("prediction_config") }
+            )
+        }
+        composable("bets_history") {
+            com.example.ui.BetsHistoryScreen(
+                viewModel = viewModel,
+                onNavigateBack = { navController.popBackStack() },
+                onViewSlipDetails = { navController.navigate("predicted_bets_result") }
             )
         }
         composable("auth") {
@@ -151,7 +161,27 @@ fun PredictorApp(viewModel: PredictorViewModel = viewModel()) {
             PredictionConfigScreen(
                 viewModel = viewModel,
                 onNavigateBack = { navController.popBackStack() },
-                onPredict = { /* AI Prediction action */ }
+                onPredict = { navController.navigate("agent_prediction") }
+            )
+        }
+        composable("agent_prediction") {
+            com.example.ui.AgentPredictionScreen(
+                viewModel = viewModel,
+                onNavigateBack = { navController.popBackStack() },
+                onShowBets = {
+                    viewModel.saveAndBuildSlip()
+                    navController.navigate("predicted_bets_result")
+                }
+            )
+        }
+        composable("predicted_bets_result") {
+            com.example.ui.PredictedBetsResultScreen(
+                viewModel = viewModel,
+                onCloseToHome = {
+                    navController.navigate("home") {
+                        popUpTo("home") { inclusive = true }
+                    }
+                }
             )
         }
         composable("settings") {
@@ -169,6 +199,7 @@ fun PredictorApp(viewModel: PredictorViewModel = viewModel()) {
 fun HomeScreen(
     viewModel: PredictorViewModel,
     onNavigateToSettings: () -> Unit,
+    onNavigateToHistory: () -> Unit,
     onNavigateToAuth: () -> Unit,
     onNavigateToConfig: () -> Unit
 ) {
@@ -257,7 +288,21 @@ fun HomeScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = onNavigateToSettings) {
+                    IconButton(
+                        onClick = onNavigateToHistory,
+                        modifier = Modifier.testTag("btn_top_history")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.History,
+                            contentDescription = "Bets History",
+                            tint = AccentOrange,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = onNavigateToSettings,
+                        modifier = Modifier.testTag("btn_top_settings")
+                    ) {
                         Icon(
                             imageVector = Icons.Outlined.Settings,
                             contentDescription = "Settings",
@@ -834,13 +879,40 @@ fun PredictionConfigScreen(
     val selectedMatchIds = selectedItems.filter { it.startsWith("match_") }.mapNotNull { it.removePrefix("match_").toIntOrNull() }.toSet()
     val selectedMatches = countries.flatMap { it.leagues }.flatMap { it.matches }.filter { it.id in selectedMatchIds }
     
+    val cloudSyncState by viewModel.cloudSyncState.collectAsStateWithLifecycle()
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Prediction Config", color = TextMain, fontWeight = FontWeight.Bold) },
+                title = { 
+                    Column {
+                        Text("Prediction Config", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        Text("Cloud Synced • Firebase Firestore", color = AccentGreen, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = AccentOrange)
+                    }
+                },
+                actions = {
+                    Surface(
+                        color = Color(0xFF1E222B),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.padding(end = 12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .background(AccentGreen, CircleShape)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Firebase Active", color = TextSub, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = AppDarkBg, titleContentColor = TextMain)
