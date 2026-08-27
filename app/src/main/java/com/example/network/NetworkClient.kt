@@ -67,18 +67,23 @@ class Tls12SocketFactory(private val delegate: SSLSocketFactory) : SSLSocketFact
 object NetworkClient {
     private const val BASE_URL = "https://v3.football.api-sports.io/"
 
+    val okHttpClient: OkHttpClient by lazy {
+        createOkHttpClient()
+    }
+
     val apiFootballService: ApiFootballService by lazy {
-        createRetrofit().create(ApiFootballService::class.java)
+        createRetrofit(BASE_URL).create(ApiFootballService::class.java)
     }
 
     val moshi: com.squareup.moshi.Moshi by lazy {
         com.squareup.moshi.Moshi.Builder().build()
     }
 
-    private fun createRetrofit(): Retrofit {
+    fun createRetrofit(baseUrl: String): Retrofit {
+        val sanitizedUrl = if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/"
         return Retrofit.Builder()
-            .baseUrl(BASE_URL)
-            .client(createOkHttpClient())
+            .baseUrl(sanitizedUrl)
+            .client(okHttpClient)
             .addConverterFactory(MoshiConverterFactory.create(moshi))
             .build()
     }

@@ -73,6 +73,11 @@ class FirebaseKeyService(private val context: Context) {
 
         val endpointUrl = when {
             !rawEndpoint.isNullOrBlank() -> rawEndpoint
+            roleStr.contains("FOOTBALL_DATA", ignoreCase = true) || roleStr.contains("FOOTBALL-DATA", ignoreCase = true) -> "https://api.football-data.org/v4/"
+            roleStr.contains("THE_ODDS", ignoreCase = true) || roleStr.contains("ODDS", ignoreCase = true) -> "https://api.the-odds-api.com/v4/"
+            roleStr.contains("SPORTMONK", ignoreCase = true) -> "https://api.sportmonks.com/v3/football/"
+            roleStr.contains("SPORTSDB", ignoreCase = true) -> "https://www.thesportsdb.com/api/v1/json/"
+            roleStr.contains("API_FOOTBALL", ignoreCase = true) || roleStr.contains("API-SPORTS", ignoreCase = true) -> "https://v3.football.api-sports.io/"
             roleStr.contains("FIRECRAWL", ignoreCase = true) -> "https://api.firecrawl.dev/v1/search"
             roleStr.contains("GEMINI", ignoreCase = true) -> "https://generativelanguage.googleapis.com/v1beta/"
             label.contains("nara", ignoreCase = true) || id.contains("nara", ignoreCase = true) || id.contains("ovyn8", ignoreCase = true) -> "https://router.bynara.id/v1"
