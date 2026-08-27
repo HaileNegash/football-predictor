@@ -212,11 +212,12 @@ fun PredictedBetsResultScreen(
                                 sb.append("━━━━━━━━━━━━━━━━━━━\n")
                                 slip.items.forEachIndexed { i, item ->
                                     sb.append("${i + 1}. ${item.homeTeam} vs ${item.awayTeam}\n")
-                                    sb.append("   ▶ Market: [${item.betTypeCategory}] ${item.recommendedBet}\n")
-                                    sb.append("   ▶ Odds: @${item.simulatedOdds} | Confidence: ${item.confidence}%\n")
+                                    sb.append("   ▶ Market: [${item.betTypeCategory ?: "—"}] ${item.recommendedBet}\n")
+                                    sb.append("   ▶ Odds: @${item.simulatedOdds ?: "no price"} | Confidence: ${item.confidence}%\n")
                                 }
                                 sb.append("━━━━━━━━━━━━━━━━━━━\n")
                                 sb.append("Combined Odds: @${slip.totalCombinedOdds}\n")
+                                sb.append("All legs land: ${slip.jointProbability}%\n")
                                 sb.append("Est. Payout: ${slip.currencySymbol}${String.format(java.util.Locale.US, "%.2f", slip.estimatedPayout)} (${slip.currencyCode})\n")
                                 sb.append("Net Profit: +${slip.currencySymbol}${String.format(java.util.Locale.US, "%.2f", slip.potentialProfit)}\n")
 
@@ -343,8 +344,11 @@ fun PredictedBetsResultScreen(
                                     modifier = Modifier.weight(1f)
                                 )
                                 MetricPill(
-                                    title = "AVG CONFIDENCE",
-                                    value = "${slip.averageConfidence}%",
+                                    // Joint chance, not the mean of the legs. Averaging
+                                    // made a 6-leg slip of 80% picks look like an 80%
+                                    // bet when its real chance of landing is ~26%.
+                                    title = "ALL LEGS LAND",
+                                    value = "${slip.jointProbability}%",
                                     accentColor = CyberEmerald,
                                     modifier = Modifier.weight(1f)
                                 )
@@ -555,7 +559,7 @@ fun PredictedBetsResultScreen(
                                         border = BorderStroke(1.dp, activeAccent.copy(alpha = 0.4f))
                                     ) {
                                         Text(
-                                            text = item.betTypeCategory,
+                                            text = item.betTypeCategory ?: "—",
                                             color = activeAccent,
                                             fontSize = 10.sp,
                                             fontWeight = FontWeight.Bold,
@@ -570,7 +574,9 @@ fun PredictedBetsResultScreen(
                                         border = BorderStroke(1.dp, CyberGold.copy(alpha = 0.4f))
                                     ) {
                                         Text(
-                                            text = "@${item.simulatedOdds}",
+                                            // "no price" rather than a fabricated number
+                                            // when the market wasn't available.
+                                            text = item.simulatedOdds?.let { "@$it" } ?: "no price",
                                             color = CyberGold,
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.ExtraBold,

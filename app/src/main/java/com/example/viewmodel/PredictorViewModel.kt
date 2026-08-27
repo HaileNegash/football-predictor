@@ -56,6 +56,55 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
     val userManager = com.example.auth.UserManager(application)
     val currentUser = userManager.currentUser
 
+    /** Fetches the real evidence a prediction is grounded in, under a request budget. */
+    private val contextRepository = com.example.network.MatchContextRepository(application)
+
+    /** Fetches final scores so predictions can actually be graded. */
+    private val resultsRepository = com.example.network.ResultsRepository()
+
+    /**
+     * Predictions that survive process death. Without this every app restart re-billed
+     * a full context fetch + Firecrawl scrape + model completion per fixture to
+     * regenerate answers already paid for.
+     */
+    private val predictionStore = com.example.network.PredictionStore(application)
+
+    /** In-memory mirror of [predictionStore], keyed by fixture id. */
+    private var cachedPredictions: MutableMap<Int, com.example.models.PredictionResult> =
+        mutableMapOf()
+
+    private companion object {
+        /** Today's fixtures change (goals, status); past dates are final. */
+        const val FIXTURE_TTL_TODAY_MS = 3 * 60 * 1000L
+        const val FIXTURE_TTL_OTHER_MS = 12 * 60 * 60 * 1000L
+
+        /**
+         * API-Football calls allowed for one manual prediction: standings, H2H,
+         * injuries, odds.
+         */
+        const val SINGLE_PREDICTION_BUDGET = 4
+
+        /**
+         * Ceiling for a whole batch run. A free plan is ~100 requests/day, and
+         * fixtures already consumed some, so a batch is capped well below that.
+         * Standings memoization means most fixtures in a run cost far less than 4.
+         */
+        const val BATCH_REQUEST_BUDGET = 40
+
+        /** Fixture-result lookups per settlement pass; 20 ids per request. */
+        const val SETTLEMENT_REQUEST_BUDGET = 2
+
+        /**
+         * How long after kickoff a fixture is worth asking about. 90 minutes plus
+         * half-time and stoppage; 2h is comfortably past full time for a normal match
+         * without waiting so long that same-evening results go unsettled.
+         */
+        const val MIN_SECONDS_AFTER_KICKOFF = 2 * 60 * 60L
+
+        /** Legs kept when building the value-ranked slip. */
+        const val MAX_SLIP_LEGS = 8
+    }
+
     private val _countries = MutableStateFlow<List<Country>>(emptyList())
     
     private val _searchQuery = MutableStateFlow("")
@@ -123,9 +172,22 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 
     init {
+        // Load persisted predictions before fixtures, so the first mapping pass can
+        // reattach them and no already-paid-for prediction is regenerated.
+        cachedPredictions = predictionStore.load().toMutableMap()
         loadSavedSlipsFromStorage()
+        recomputeAccuracy()
         fetchFixtures()
         syncFromFirebaseCloud()
+        // Grade anything that finished while the app was closed, so the hit rate is
+        // current on launch rather than only after a manual refresh.
+        settlePendingPredictions()
+    }
+
+    /** Records a prediction in memory and on disk, keyed by fixture id. */
+    private fun rememberPrediction(fixtureId: Int, prediction: com.example.models.PredictionResult) {
+        cachedPredictions[fixtureId] = prediction
+        predictionStore.save(mapOf(fixtureId to prediction))
     }
 
     fun saveApiFootballKey(key: String, label: String = "Primary API Key") {
@@ -170,9 +232,18 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 val dateStr = _currentDate.value
                 val cacheKey = "fixtures_cache_$dateStr"
-                
-                val cachedJson = prefs.getString(cacheKey, null)
-                val cachedResponse: ApiFootballResponse? = if (!forceRefresh && cachedJson != null) {
+                val cacheStampKey = "fixtures_cache_at_$dateStr"
+
+                // The old code cached forever, so live scores for today never
+                // updated once a payload had been written. Today's fixtures move
+                // (kickoffs, goals, status changes) so they get a short TTL;
+                // past dates are final and can be kept much longer.
+                val ageMs = System.currentTimeMillis() - prefs.getLong(cacheStampKey, 0L)
+                val ttlMs = if (_currentDateOffset.value == 0) FIXTURE_TTL_TODAY_MS else FIXTURE_TTL_OTHER_MS
+                val cacheFresh = ageMs in 0 until ttlMs
+
+                val cachedJson = if (!forceRefresh && cacheFresh) prefs.getString(cacheKey, null) else null
+                val cachedResponse: ApiFootballResponse? = if (cachedJson != null) {
                     try {
                         NetworkClient.moshi.adapter(ApiFootballResponse::class.java).fromJson(cachedJson)
                     } catch (e: Exception) {
@@ -181,11 +252,14 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                 } else null
 
                 val response = cachedResponse ?: NetworkClient.apiFootballService.getFixtures(activeKey, dateStr)
-                
+
                 if (cachedResponse == null && (response.errors == null || (response.errors is List<*> && response.errors.isEmpty()))) {
                     try {
                         val json = NetworkClient.moshi.adapter(ApiFootballResponse::class.java).toJson(response)
-                        prefs.edit().putString(cacheKey, json).apply()
+                        prefs.edit()
+                            .putString(cacheKey, json)
+                            .putLong(cacheStampKey, System.currentTimeMillis())
+                            .apply()
                     } catch (e: Exception) {
                         // Ignore cache write errors
                     }
@@ -253,7 +327,25 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                                         startTime = timeString,
                                         status = apiFixture.fixture.status.short,
                                         homeScore = apiFixture.goals.home,
-                                        awayScore = apiFixture.goals.away
+                                        awayScore = apiFixture.goals.away,
+                                        // Identifiers below are what MatchContextRepository
+                                        // queries with. Without them there is no standings,
+                                        // H2H, injury or odds lookup possible and the model
+                                        // is back to guessing from two team names.
+                                        homeTeamId = apiFixture.teams.home.id,
+                                        awayTeamId = apiFixture.teams.away.id,
+                                        leagueId = leagueInfo.id,
+                                        leagueName = leagueInfo.name,
+                                        season = leagueInfo.season,
+                                        round = leagueInfo.round,
+                                        countryName = countryName,
+                                        kickoffEpoch = apiFixture.fixture.timestamp,
+                                        // Reattach a previously generated prediction for
+                                        // this fixture. Fixtures are refetched on every
+                                        // date change and TTL expiry, and without this
+                                        // the prediction was dropped on the floor and
+                                        // had to be paid for again.
+                                        prediction = cachedPredictions[apiFixture.fixture.id]
                                     )
                                 }.sortedBy { it.startTime }
                                 
@@ -290,68 +382,117 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun predictMatch(matchId: Int) {
+        // A prediction already paid for is not regenerated. This check precedes the
+        // quota consumption below: charging the user a prediction to redisplay one
+        // they already have is wrong twice over.
+        cachedPredictions[matchId]?.let { cached ->
+            applyPredictionToMatch(matchId, cached)
+            return
+        }
+
         if (!userManager.consumePredictionQuota()) {
             _errorMessage.value = "Daily free prediction limit reached! Please sign in or upgrade to PRO VIP for unlimited predictions."
             return
         }
 
         viewModelScope.launch {
-            // Find match details
-            var matchHome = "Home Team"
-            var matchAway = "Away Team"
-            var matchLeague = "League"
-
+            // Locate the fixture. Bail out rather than predicting for the old
+            // "Home Team vs Away Team" placeholders, which produced a real-looking
+            // prediction about teams that don't exist.
+            var target: Match? = null
+            var targetLeagueName: String? = null
+            var targetCountry: String? = null
             _countries.value.forEach { country ->
                 country.leagues.forEach { league ->
                     league.matches.find { it.id == matchId }?.let {
-                        matchHome = it.homeTeam
-                        matchAway = it.awayTeam
-                        matchLeague = league.name
+                        target = it
+                        targetLeagueName = league.name
+                        targetCountry = country.name
                     }
                 }
             }
+            val match = target
+            if (match == null) {
+                _errorMessage.value = "Could not find that fixture — try refreshing."
+                return@launch
+            }
 
             val openAiManagedKey = keyManager.getActiveManagedKey(com.example.keymanager.ApiRole.OPENAI_COMPATIBLE)
-            val prediction = if (openAiManagedKey != null && openAiManagedKey.key.isNotBlank()) {
-                val result = com.example.network.OpenAiService.generatePrediction(
-                    homeTeam = matchHome,
-                    awayTeam = matchAway,
-                    league = matchLeague,
-                    managedKey = openAiManagedKey,
-                    allowedBetTypes = _selectedBetTypes.value.toList()
-                )
-                if (result.isSuccess) {
-                    keyManager.reportKeySuccess(com.example.keymanager.ApiRole.OPENAI_COMPATIBLE, openAiManagedKey.key)
-                    result.getOrNull()
-                } else {
-                    keyManager.reportKeyError(
-                        com.example.keymanager.ApiRole.OPENAI_COMPATIBLE,
-                        openAiManagedKey.key,
-                        isAuthError = false
-                    )
-                    generateSmartMockPrediction(matchHome, matchAway)
-                }
-            } else {
-                delay(1000)
-                generateSmartMockPrediction(matchHome, matchAway)
+            if (openAiManagedKey == null || openAiManagedKey.key.isBlank()) {
+                _errorMessage.value = "Add an AI provider key in Settings to generate predictions."
+                return@launch
             }
-            
-            _countries.update { currentCountries ->
-                currentCountries.map { country ->
-                    country.copy(
-                        leagues = country.leagues.map { league ->
-                            league.copy(
-                                matches = league.matches.map { match ->
-                                    if (match.id == matchId) {
-                                        match.copy(prediction = prediction)
-                                    } else {
-                                        match
-                                    }
-                                }
-                            )
-                        }
-                    )
-                }
+
+            val footballKey = keyManager.getActiveKey(com.example.keymanager.ApiRole.API_FOOTBALL)
+            contextRepository.beginBatch()
+            val ctx = if (!footballKey.isNullOrBlank()) {
+                contextRepository.buildContext(
+                    fixtureId = match.id,
+                    homeTeam = match.homeTeam,
+                    awayTeam = match.awayTeam,
+                    homeTeamId = match.homeTeamId,
+                    awayTeamId = match.awayTeamId,
+                    leagueId = match.leagueId,
+                    leagueName = match.leagueName ?: targetLeagueName ?: "Unknown league",
+                    country = match.countryName ?: targetCountry ?: "",
+                    season = match.season,
+                    round = match.round,
+                    apiKey = footballKey,
+                    budget = SINGLE_PREDICTION_BUDGET
+                )
+            } else {
+                // No football key: still predict, but with an empty context so the
+                // evidence tier caps confidence and the prompt says it is unsupported.
+                com.example.models.MatchContext(
+                    fixtureId = match.id,
+                    homeTeam = match.homeTeam,
+                    awayTeam = match.awayTeam,
+                    leagueName = match.leagueName ?: targetLeagueName ?: "Unknown league",
+                    country = match.countryName ?: targetCountry ?: "",
+                    round = match.round
+                )
+            }
+
+            val enriched = withFirecrawlIntel(ctx)
+
+            val result = com.example.network.OpenAiService.generatePrediction(
+                ctx = enriched,
+                managedKey = openAiManagedKey,
+                allowedBetTypes = _selectedBetTypes.value.toList()
+            )
+
+            val prediction = result.getOrNull()
+            if (prediction != null) {
+                keyManager.reportKeySuccess(com.example.keymanager.ApiRole.OPENAI_COMPATIBLE, openAiManagedKey.key)
+                rememberPrediction(matchId, prediction)
+            } else {
+                reportPredictionFailure(openAiManagedKey, result.exceptionOrNull())
+                // Deliberately no fabricated fallback: showing "75% — 1.85" built
+                // from an error string is worse than telling the user it failed.
+                _errorMessage.value = "Prediction failed: ${result.exceptionOrNull()?.message ?: "unknown error"}"
+                return@launch
+            }
+
+            applyPredictionToMatch(matchId, prediction)
+        }
+    }
+
+    /** Writes a prediction onto its fixture in the country tree. */
+    private fun applyPredictionToMatch(
+        matchId: Int,
+        prediction: com.example.models.PredictionResult
+    ) {
+        _countries.update { currentCountries ->
+            currentCountries.map { country ->
+                country.copy(
+                    leagues = country.leagues.map { league ->
+                        league.copy(
+                            matches = league.matches.map { m ->
+                                if (m.id == matchId) m.copy(prediction = prediction) else m
+                            }
+                        )
+                    }
+                )
             }
         }
     }
@@ -488,6 +629,11 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
     val currentActivePredictingIndex: StateFlow<Int> = _currentActivePredictingIndex.asStateFlow()
 
     fun prepareBatchForPrediction() {
+        // Never rebuild while a run is in flight: `runAgentBatch` iterates a snapshot
+        // and writes back by match id, so replacing the list mid-run would discard
+        // every status it had already written.
+        if (_isAgentRunning.value) return
+
         val selectedIds = _selectedSearchItems.value
         val items = mutableListOf<com.example.models.AgentBatchMatchItem>()
 
@@ -513,7 +659,14 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                                 isSelected = true,
                                 status = com.example.models.BatchItemStatus.PENDING,
                                 currentAgentAction = "Pending in queue...",
-                                prediction = match.prediction
+                                prediction = match.prediction,
+                                homeTeamId = match.homeTeamId,
+                                awayTeamId = match.awayTeamId,
+                                leagueId = match.leagueId ?: league.id,
+                                season = match.season,
+                                countryName = match.countryName ?: country.name,
+                                round = match.round,
+                                kickoffEpoch = match.kickoffEpoch
                             )
                         )
                     }
@@ -521,33 +674,71 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
             }
         }
 
-        // If no matches explicitly picked, populate with next upcoming matches
+        // If no matches explicitly picked, populate with the next upcoming matches.
+        // Sorted by kickoff so "next" is actually next, rather than whatever order
+        // the country grouping happened to produce.
         if (items.isEmpty()) {
-            _countries.value.flatMap { it.leagues }.flatMap { it.matches }.take(6).forEach { match ->
-                val league = _countries.value.flatMap { it.leagues }.find { l -> l.matches.any { it.id == match.id } }
-                items.add(
-                    com.example.models.AgentBatchMatchItem(
-                        matchId = match.id,
-                        homeTeam = match.homeTeam,
-                        awayTeam = match.awayTeam,
-                        homeLogo = match.homeLogo,
-                        awayLogo = match.awayLogo,
-                        leagueName = league?.name ?: "League",
-                        startTime = match.startTime,
-                        isSelected = true,
-                        status = com.example.models.BatchItemStatus.PENDING,
-                        currentAgentAction = "Pending in queue...",
-                        prediction = match.prediction
-                    )
-                )
+            _countries.value.forEach { country ->
+                country.leagues.forEach { league ->
+                    league.matches.forEach { match ->
+                        items.add(
+                            com.example.models.AgentBatchMatchItem(
+                                matchId = match.id,
+                                homeTeam = match.homeTeam,
+                                awayTeam = match.awayTeam,
+                                homeLogo = match.homeLogo,
+                                awayLogo = match.awayLogo,
+                                leagueName = league.name,
+                                startTime = match.startTime,
+                                isSelected = true,
+                                status = com.example.models.BatchItemStatus.PENDING,
+                                currentAgentAction = "Pending in queue...",
+                                prediction = match.prediction,
+                                homeTeamId = match.homeTeamId,
+                                awayTeamId = match.awayTeamId,
+                                leagueId = match.leagueId ?: league.id,
+                                season = match.season,
+                                countryName = match.countryName ?: country.name,
+                                round = match.round,
+                                kickoffEpoch = match.kickoffEpoch
+                            )
+                        )
+                    }
+                }
             }
+            // Sort on kickoff epoch, not the "HH:mm" display string — that string
+            // sorts "09:00 tomorrow" before "21:00 today", so "next 6 matches" was
+            // whatever happened to look smallest as text.
+            val upcoming = items
+                .sortedBy { it.kickoffEpoch ?: Long.MAX_VALUE }
+                .take(6)
+            items.clear()
+            items.addAll(upcoming)
         }
 
-        _batchMatchItems.value = items
+        // Carry over anything already predicted or already failed. This runs from a
+        // LaunchedEffect, so navigating away from the agent screen and back re-entered
+        // it with every row reset to PENDING — the predictions were still in
+        // `_countries`, but the queue looked untouched and the run appeared to have
+        // never happened.
+        val previous = _batchMatchItems.value.associateBy { it.matchId }
+        val merged = items.map { fresh ->
+            val old = previous[fresh.matchId] ?: return@map fresh
+            if (old.status == com.example.models.BatchItemStatus.PENDING) fresh
+            else fresh.copy(
+                status = old.status,
+                currentAgentAction = old.currentAgentAction,
+                prediction = old.prediction ?: fresh.prediction,
+                failureReason = old.failureReason,
+                isSelected = old.isSelected
+            )
+        }
+
+        _batchMatchItems.value = merged
         _agentLogs.value = listOf(
             com.example.models.AgentStreamLog(
                 timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date()),
-                message = "Agent initialized with ${items.size} matches in queue. Ready for autonomous execution.",
+                message = "Agent initialized with ${merged.size} matches in queue. Ready for autonomous execution.",
                 type = "INFO"
             )
         )
@@ -575,133 +766,286 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
         _agentLogs.update { (it + newLog).takeLast(60) }
     }
 
+    /**
+     * Adds scraped team news to [ctx] only when Firecrawl genuinely returned
+     * something. The service used to synthesise a success string on an empty
+     * result, which was then injected into the prompt as real intel.
+     */
+    private suspend fun withFirecrawlIntel(
+        ctx: com.example.models.MatchContext
+    ): com.example.models.MatchContext {
+        val firecrawlKey = keyManager.getActiveManagedKey(com.example.keymanager.ApiRole.FIRECRAWL)
+            ?: return ctx
+        if (firecrawlKey.key.isBlank()) return ctx
+
+        val result = com.example.network.FirecrawlService.searchMatchNews(
+            ctx.homeTeam, ctx.awayTeam, firecrawlKey
+        )
+        val intel = result.getOrNull()
+        return if (intel != null) {
+            keyManager.reportKeySuccess(com.example.keymanager.ApiRole.FIRECRAWL, firecrawlKey.key)
+            ctx.copy(webIntel = intel, sources = ctx.sources + "scraped team news")
+        } else {
+            reportFirecrawlFailure(firecrawlKey, result.exceptionOrNull())
+            ctx
+        }
+    }
+
+    /**
+     * Routes a provider failure to the right key-manager action. The old code
+     * always passed `isAuthError = false`, so a 429 never triggered a cooldown and
+     * a 401 never retired a dead key — key rotation existed but did nothing.
+     */
+    private fun reportPredictionFailure(
+        key: com.example.keymanager.ManagedApiKey,
+        error: Throwable?
+    ) {
+        val http = error as? com.example.network.ApiHttpException
+        when {
+            http?.isRateLimit == true -> keyManager.reportKeyRateLimited(
+                com.example.keymanager.ApiRole.OPENAI_COMPATIBLE, key.key, cooldownSeconds = 300
+            )
+            http?.isAuthError == true -> keyManager.reportKeyError(
+                com.example.keymanager.ApiRole.OPENAI_COMPATIBLE, key.key, isAuthError = true
+            )
+            else -> keyManager.reportKeyError(
+                com.example.keymanager.ApiRole.OPENAI_COMPATIBLE, key.key, isAuthError = false
+            )
+        }
+    }
+
+    private fun reportFirecrawlFailure(
+        key: com.example.keymanager.ManagedApiKey,
+        error: Throwable?
+    ) {
+        val http = error as? com.example.network.ApiHttpException
+        when {
+            http?.isRateLimit == true -> keyManager.reportKeyRateLimited(
+                com.example.keymanager.ApiRole.FIRECRAWL, key.key, cooldownSeconds = 300
+            )
+            http?.isAuthError == true -> keyManager.reportKeyError(
+                com.example.keymanager.ApiRole.FIRECRAWL, key.key, isAuthError = true
+            )
+            else -> keyManager.reportKeyError(
+                com.example.keymanager.ApiRole.FIRECRAWL, key.key, isAuthError = false
+            )
+        }
+    }
+
     fun startAgentPredictionLoop() {
         if (_isAgentRunning.value) return
         _isAgentRunning.value = true
 
         viewModelScope.launch {
-            val list = _batchMatchItems.value
-            addLog("⚡ Starting Autonomous 1-by-1 Agent Prediction Loop...", "INFO")
+            // try/finally: the old loop reset these flags only on the happy path, so
+            // a single thrown exception left the UI permanently stuck on "running".
+            try {
+                runAgentBatch()
+            } catch (e: Exception) {
+                addLog("⛔ Agent run aborted: ${e.message}", "WARN")
+            } finally {
+                _currentActivePredictingIndex.value = -1
+                _isAgentRunning.value = false
+            }
+        }
+    }
 
-            val openAiManagedKey = keyManager.getActiveManagedKey(com.example.keymanager.ApiRole.OPENAI_COMPATIBLE)
+    private suspend fun runAgentBatch() {
+        // Iterate a snapshot. The old loop indexed into the live flow while also
+        // updating it, which threw IndexOutOfBoundsException if the list shrank.
+        val queue = _batchMatchItems.value
+        val selected = queue.filter { it.isSelected }
+        addLog("⚡ Starting agent run over ${selected.size} selected matches...", "INFO")
 
-            for (i in list.indices) {
-                val item = _batchMatchItems.value[i]
-                if (!item.isSelected) {
-                    continue // skipped by checkbox
-                }
+        val openAiManagedKey = keyManager.getActiveManagedKey(com.example.keymanager.ApiRole.OPENAI_COMPATIBLE)
+        if (openAiManagedKey == null || openAiManagedKey.key.isBlank()) {
+            addLog("⛔ No AI provider key configured. Add one in Settings — predictions cannot be generated without it.", "WARN")
+            return
+        }
 
-                _currentActivePredictingIndex.value = i
+        val footballKey = keyManager.getActiveKey(com.example.keymanager.ApiRole.API_FOOTBALL)
+        if (footballKey.isNullOrBlank()) {
+            addLog("⚠️ No API-Football key: predicting without form, table, H2H or odds. Confidence will be capped accordingly.", "WARN")
+        }
 
-                // Record prediction usage
-                userManager.consumePredictionQuota()
+        val brainModelName = openAiManagedKey.modelName.takeIf { it.isNotBlank() }
+            ?: keyManager.activeBrainModel
+        val predictionKey = openAiManagedKey.copy(modelName = brainModelName)
 
-                // Step 1: Mark as PREDICTING
-                _batchMatchItems.update { currentList ->
-                    currentList.mapIndexed { idx, curItem ->
-                        if (idx == i) curItem.copy(
-                            status = com.example.models.BatchItemStatus.PREDICTING,
-                            currentAgentAction = "Agent inspecting ${curItem.homeTeam} vs ${curItem.awayTeam}..."
-                        ) else curItem
-                    }
-                }
+        contextRepository.beginBatch()
+        var succeeded = 0
+        var failed = 0
+        var reused = 0
 
-                addLog("🔍 [Match ${i + 1}/${list.size}] Gathering H2H & Form for ${item.homeTeam} vs ${item.awayTeam}", "SEARCH")
-                delay(900)
+        for ((position, item) in queue.withIndex()) {
+            if (!item.isSelected) continue
 
-                // Step 2: Firecrawl Real Web Scrape / Tactical Analysis
-                var squadIntelSummary: String? = null
-                val firecrawlKey = keyManager.getActiveManagedKey(com.example.keymanager.ApiRole.FIRECRAWL)
-                if (firecrawlKey != null && firecrawlKey.key.isNotBlank()) {
-                    _batchMatchItems.update { currentList ->
-                        currentList.mapIndexed { idx, curItem ->
-                            if (idx == i) curItem.copy(
-                                currentAgentAction = "Firecrawl scraping live tactical squad & injury news..."
-                            ) else curItem
-                        }
-                    }
-                    val crawlResult = com.example.network.FirecrawlService.searchMatchNews(item.homeTeam, item.awayTeam, firecrawlKey)
-                    if (crawlResult.isSuccess) {
-                        squadIntelSummary = crawlResult.getOrNull()
-                        keyManager.reportKeySuccess(com.example.keymanager.ApiRole.FIRECRAWL, firecrawlKey.key)
-                        addLog("🔥 [Firecrawl Search OK] ${squadIntelSummary?.take(80)}...", "SEARCH")
-                    } else {
-                        keyManager.reportKeyError(com.example.keymanager.ApiRole.FIRECRAWL, firecrawlKey.key, isAuthError = false)
-                        addLog("⚡ [Firecrawl] Squad Intel gathered via cached database", "SEARCH")
-                    }
-                } else {
-                    _batchMatchItems.update { currentList ->
-                        currentList.mapIndexed { idx, curItem ->
-                            if (idx == i) curItem.copy(
-                                currentAgentAction = "Analyzing squad injuries, form curves & tactical match-up..."
-                            ) else curItem
-                        }
-                    }
-                }
-                val brainModelName = openAiManagedKey?.modelName?.takeIf { it.isNotBlank() } ?: keyManager.activeBrainModel
-                addLog("🧠 Synthesizing tactical probabilities with AI Brain: $brainModelName...", "AI")
-                delay(600)
+            _currentActivePredictingIndex.value = position
 
-                // Step 3: Run AI Prediction (or real OpenAI provider if available)
-                val prediction = if (openAiManagedKey != null && openAiManagedKey.key.isNotBlank()) {
-                    val result = com.example.network.OpenAiService.generatePrediction(
-                        homeTeam = item.homeTeam,
-                        awayTeam = item.awayTeam,
-                        league = item.leagueName,
-                        managedKey = openAiManagedKey.copy(modelName = brainModelName),
-                        allowedBetTypes = _selectedBetTypes.value.toList(),
-                        tacticalIntel = squadIntelSummary
+            // Reuse a persisted prediction for this fixture rather than paying for it
+            // again. This is checked before the quota is consumed and before any
+            // network call, because the expensive part of a run is the per-fixture
+            // context fetch + scrape + completion, and none of it is needed if we
+            // already have the answer.
+            val existing = item.prediction ?: cachedPredictions[item.matchId]
+            if (existing != null) {
+                reused++
+                updateBatchItem(item.matchId) {
+                    it.copy(
+                        status = com.example.models.BatchItemStatus.FINISHED,
+                        currentAgentAction = "${existing.recommendedBet} @ ${existing.odds ?: "no price"} (cached)",
+                        prediction = existing,
+                        failureReason = null
                     )
-                    if (result.isSuccess) {
-                        keyManager.reportKeySuccess(com.example.keymanager.ApiRole.OPENAI_COMPATIBLE, openAiManagedKey.key)
-                        result.getOrNull()
-                    } else {
-                        keyManager.reportKeyError(com.example.keymanager.ApiRole.OPENAI_COMPATIBLE, openAiManagedKey.key, isAuthError = false)
-                        generateSmartMockPrediction(item.homeTeam, item.awayTeam)
-                    }
-                } else {
-                    generateSmartMockPrediction(item.homeTeam, item.awayTeam)
                 }
-
-                // Step 4: Mark as FINISHED
-                _batchMatchItems.update { currentList ->
-                    currentList.mapIndexed { idx, curItem ->
-                        if (idx == i) curItem.copy(
-                            status = com.example.models.BatchItemStatus.FINISHED,
-                            currentAgentAction = "Prediction complete: ${prediction?.recommendedBet}",
-                            prediction = prediction
-                        ) else curItem
-                    }
-                }
-
-                // Also update root countries state
-                _countries.update { currentCountries ->
-                    currentCountries.map { country ->
-                        country.copy(
-                            leagues = country.leagues.map { league ->
-                                league.copy(
-                                    matches = league.matches.map { match ->
-                                        if (match.id == item.matchId) {
-                                            match.copy(prediction = prediction)
-                                        } else match
-                                    }
-                                )
-                            }
-                        )
-                    }
-                }
-
-                addLog("✅ [Finished] ${item.homeTeam} vs ${item.awayTeam} ➔ ${prediction?.recommendedBet} (${prediction?.confidence}% conf)", "SUCCESS")
-                delay(600)
+                addLog("♻️ ${item.homeTeam} vs ${item.awayTeam} ➔ reusing stored prediction", "INFO")
+                continue
             }
 
-            _currentActivePredictingIndex.value = -1
-            _isAgentRunning.value = false
-            addLog("🎉 Autonomous batch prediction completed across all selected matches.", "SUCCESS")
-            
-            // Automatically build, persist, and cloud-sync the prediction slip
-            val generatedSlip = saveAndBuildSlip()
-            addLog("💾 Generated & Synced Bet Slip #${generatedSlip.slipId} to Cloud Firestore (${generatedSlip.items.size} matches, @${generatedSlip.totalCombinedOdds} combo odds)", "SUCCESS")
+            userManager.consumePredictionQuota()
+
+            updateBatchItem(item.matchId) {
+                it.copy(
+                    status = com.example.models.BatchItemStatus.PREDICTING,
+                    currentAgentAction = "Gathering table, form, H2H and market for ${it.homeTeam} vs ${it.awayTeam}...",
+                    failureReason = null
+                )
+            }
+
+            // Step 1: real evidence, under the shared batch budget.
+            val baseCtx = if (!footballKey.isNullOrBlank()) {
+                contextRepository.buildContext(
+                    fixtureId = item.matchId,
+                    homeTeam = item.homeTeam,
+                    awayTeam = item.awayTeam,
+                    homeTeamId = item.homeTeamId,
+                    awayTeamId = item.awayTeamId,
+                    leagueId = item.leagueId,
+                    leagueName = item.leagueName,
+                    country = item.countryName ?: "",
+                    season = item.season,
+                    round = item.round,
+                    apiKey = footballKey,
+                    budget = BATCH_REQUEST_BUDGET
+                )
+            } else {
+                com.example.models.MatchContext(
+                    fixtureId = item.matchId,
+                    homeTeam = item.homeTeam,
+                    awayTeam = item.awayTeam,
+                    leagueName = item.leagueName,
+                    country = item.countryName ?: "",
+                    round = item.round
+                )
+            }
+
+            addLog(
+                if (baseCtx.sources.isEmpty())
+                    "⚠️ [${item.homeTeam} vs ${item.awayTeam}] No data retrieved — prediction will be marked unsupported"
+                else
+                    "📊 [${item.homeTeam} vs ${item.awayTeam}] ${baseCtx.sources.joinToString(", ")} (evidence: ${baseCtx.evidenceLevel})",
+                "SEARCH"
+            )
+
+            // Step 2: optional scraped news, only if it actually came back.
+            updateBatchItem(item.matchId) {
+                it.copy(currentAgentAction = "Checking for late team news...")
+            }
+            val ctx = withFirecrawlIntel(baseCtx)
+
+            // Step 3: the model call.
+            updateBatchItem(item.matchId) {
+                it.copy(currentAgentAction = "Pricing the match with $brainModelName...")
+            }
+            val result = com.example.network.OpenAiService.generatePrediction(
+                ctx = ctx,
+                managedKey = predictionKey,
+                allowedBetTypes = _selectedBetTypes.value.toList()
+            )
+            val prediction = result.getOrNull()
+
+            if (prediction == null) {
+                failed++
+                val err = result.exceptionOrNull()
+                reportPredictionFailure(openAiManagedKey, err)
+                // No fabricated fallback. A visible failure beats an invented pick
+                // that the user cannot distinguish from real analysis.
+                updateBatchItem(item.matchId) {
+                    it.copy(
+                        status = com.example.models.BatchItemStatus.FAILED,
+                        currentAgentAction = "Prediction failed",
+                        failureReason = err?.message ?: "unknown error"
+                    )
+                }
+                addLog("❌ [${item.homeTeam} vs ${item.awayTeam}] ${err?.message ?: "prediction failed"}", "WARN")
+
+                // A dead or rate-limited key will fail for every remaining fixture
+                // too; stop rather than burning the whole queue against it.
+                val http = err as? com.example.network.ApiHttpException
+                if (http?.isAuthError == true) {
+                    addLog("⛔ Provider rejected the key (HTTP ${http.code}). Stopping run.", "WARN")
+                    break
+                }
+                delay(400)
+                continue
+            }
+
+            succeeded++
+            keyManager.reportKeySuccess(com.example.keymanager.ApiRole.OPENAI_COMPATIBLE, openAiManagedKey.key)
+            // Persist immediately, per fixture, not at the end of the run. A run that
+            // is killed halfway through has still paid for the predictions it made.
+            rememberPrediction(item.matchId, prediction)
+
+            updateBatchItem(item.matchId) {
+                it.copy(
+                    status = com.example.models.BatchItemStatus.FINISHED,
+                    currentAgentAction = "${prediction.recommendedBet} @ ${prediction.odds ?: "no price"}",
+                    prediction = prediction,
+                    failureReason = null
+                )
+            }
+
+            applyPredictionToMatch(item.matchId, prediction)
+
+            val edgeNote = prediction.edgePercent?.let { String.format(Locale.US, ", edge %+.1f pts", it) }.orEmpty()
+            addLog(
+                "✅ ${item.homeTeam} vs ${item.awayTeam} ➔ ${prediction.recommendedBet} " +
+                        "(${prediction.confidence}%$edgeNote)",
+                "SUCCESS"
+            )
+            delay(300)
+        }
+
+        addLog(
+            buildString {
+                append("🎯 Run complete: $succeeded predicted")
+                if (reused > 0) append(", $reused reused from cache")
+                append(", $failed failed. ")
+                append("API-Football requests used: ${contextRepository.requestsSpent}.")
+            },
+            if (failed == 0) "SUCCESS" else "INFO"
+        )
+
+        val generatedSlip = saveAndBuildSlip()
+        if (generatedSlip == null) {
+            addLog("ℹ️ No predictions succeeded, so no slip was created.", "WARN")
+        } else {
+            addLog(
+                "💾 Slip ${generatedSlip.slipId}: ${generatedSlip.items.size} legs, " +
+                        "combined odds ${generatedSlip.totalCombinedOdds}, " +
+                        "joint chance ${generatedSlip.jointProbability}%",
+                "SUCCESS"
+            )
+        }
+    }
+
+    /** Updates one batch row by match id rather than by index. */
+    private fun updateBatchItem(
+        matchId: Int,
+        transform: (com.example.models.AgentBatchMatchItem) -> com.example.models.AgentBatchMatchItem
+    ) {
+        _batchMatchItems.update { list ->
+            list.map { if (it.matchId == matchId) transform(it) else it }
         }
     }
 
@@ -721,65 +1065,12 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    private fun generateSmartMockPrediction(home: String, away: String): PredictionResult {
-        val selected = _selectedBetTypes.value
-        val possibleTips = mutableListOf<Triple<String, Int, String>>() // pick, conf, betType
-
-        if (selected.contains("Both Teams to Score (BTTS)")) {
-            possibleTips.add(Triple("Both Teams to Score (BTTS - YES)", 82, "BTTS"))
-            possibleTips.add(Triple("Both Teams to Score (BTTS - NO)", 74, "BTTS"))
-        }
-        if (selected.contains("Over/Under Goals")) {
-            possibleTips.add(Triple("Over 2.5 Total Goals", 78, "Over/Under"))
-            possibleTips.add(Triple("Under 2.5 Total Goals", 75, "Over/Under"))
-            possibleTips.add(Triple("Over 1.5 Total Goals", 88, "Over/Under"))
-        }
-        if (selected.contains("Double Chance (1X, 12, X2)")) {
-            possibleTips.add(Triple("$home or Draw (1X Double Chance)", 85, "Double Chance"))
-            possibleTips.add(Triple("Draw or $away (X2 Double Chance)", 76, "Double Chance"))
-        }
-        if (selected.contains("Draw No Bet (DNB)")) {
-            possibleTips.add(Triple("Draw No Bet - $home", 80, "Draw No Bet"))
-            possibleTips.add(Triple("Draw No Bet - $away", 73, "Draw No Bet"))
-        }
-        if (selected.contains("Asian Handicap") || selected.contains("European Handicap")) {
-            possibleTips.add(Triple("Asian Handicap $home -0.5", 77, "Handicap"))
-            possibleTips.add(Triple("Handicap $away (+1.5)", 81, "Handicap"))
-        }
-        if (selected.contains("1X2 (Win / Draw / Lose)")) {
-            possibleTips.add(Triple("$home to Win (1X2)", 79, "1X2"))
-            possibleTips.add(Triple("$away to Win (1X2)", 68, "1X2"))
-        }
-        if (selected.contains("Combo Bets")) {
-            possibleTips.add(Triple("$home to Win & Over 1.5 Goals", 81, "Combo"))
-            possibleTips.add(Triple("1X & Both Teams to Score", 76, "Combo"))
-        }
-
-        if (possibleTips.isEmpty()) {
-            possibleTips.add(Triple("Both Teams to Score (BTTS - YES)", 80, "BTTS"))
-            possibleTips.add(Triple("Over 2.5 Total Goals", 77, "Over/Under"))
-            possibleTips.add(Triple("$home or Draw (1X)", 84, "Double Chance"))
-        }
-
-        val picked = possibleTips.random()
-        val odds = when (picked.third) {
-            "Double Chance" -> String.format(Locale.US, "%.2f", 1.35 + (home.length % 5) * 0.08)
-            "Over/Under" -> String.format(Locale.US, "%.2f", 1.65 + (away.length % 6) * 0.10)
-            "BTTS" -> String.format(Locale.US, "%.2f", 1.75 + (home.length % 4) * 0.12)
-            "Draw No Bet" -> String.format(Locale.US, "%.2f", 1.55 + (away.length % 5) * 0.11)
-            "Handicap" -> String.format(Locale.US, "%.2f", 1.85 + (home.length % 5) * 0.15)
-            "Combo" -> String.format(Locale.US, "%.2f", 2.20 + (away.length % 6) * 0.20)
-            else -> String.format(Locale.US, "%.2f", 1.70 + (home.length % 7) * 0.14)
-        }
-
-        return PredictionResult(
-            recommendedBet = picked.first,
-            confidence = picked.second,
-            rationale = "High expected value model: $home offensive momentum vs $away defensive transition metrics.",
-            odds = odds,
-            betType = picked.third
-        )
-    }
+    // `generateSmartMockPrediction` was removed. It picked a tip at random from a
+    // hardcoded list, assigned a confidence that was a constant per bet type, and
+    // derived odds from `homeTeam.length % 5` — then that output was persisted,
+    // uploaded to Firestore, and displayed identically to a real model prediction.
+    // There is no way for a user to tell the two apart, so the honest options are
+    // a real prediction or a visible failure.
 
     // App Customization Settings (Theme, Accents, Odds Format, Live Refresh, Haptics)
     private val _customSettings = MutableStateFlow(
@@ -838,6 +1129,10 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
             }
         }
         editor.apply()
+        // Stored predictions go too. Leaving them would make a "clear cache" that
+        // silently kept serving the old picks against freshly fetched fixtures.
+        predictionStore.clear()
+        cachedPredictions.clear()
         fetchFixtures(forceRefresh = true)
     }
 
@@ -860,6 +1155,7 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                     val itemsList = mutableListOf<com.example.models.PredictedBetItem>()
                     for (j in 0 until itemsArray.length()) {
                         val itObj = itemsArray.getJSONObject(j)
+                        val pick = itObj.optString("recommendedBet")
                         itemsList.add(
                             com.example.models.PredictedBetItem(
                                 matchId = itObj.optInt("matchId"),
@@ -869,11 +1165,22 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                                 awayLogo = if (itObj.has("awayLogo")) itObj.optString("awayLogo") else null,
                                 leagueName = itObj.optString("leagueName"),
                                 startTime = itObj.optString("startTime"),
-                                recommendedBet = itObj.optString("recommendedBet"),
-                                confidence = itObj.optInt("confidence", 75),
+                                recommendedBet = pick,
+                                confidence = itObj.optInt("confidence", 0),
                                 rationale = itObj.optString("rationale"),
-                                simulatedOdds = itObj.optString("simulatedOdds", "1.75"),
-                                betTypeCategory = itObj.optString("betTypeCategory", extractBetTypeCategory(itObj.optString("recommendedBet")))
+                                // No "1.75" default: a leg saved without a price had
+                                // no price, and inventing one corrupts the ROI history.
+                                simulatedOdds = itObj.optString("simulatedOdds").takeIf { it.isNotBlank() },
+                                betTypeCategory = itObj.optString("betTypeCategory")
+                                    .takeIf { it.isNotBlank() } ?: extractBetTypeCategory(pick),
+                                isModelBacked = itObj.optBoolean("isModelBacked", false),
+                                edgePercent = if (itObj.has("edgePercent")) itObj.optDouble("edgePercent") else null,
+                                isMarketPrice = itObj.optBoolean("isMarketPrice", false),
+                                outcome = parseOutcome(itObj.optString("outcome")),
+                                finalHomeScore = if (itObj.has("finalHomeScore")) itObj.optInt("finalHomeScore") else null,
+                                finalAwayScore = if (itObj.has("finalAwayScore")) itObj.optInt("finalAwayScore") else null,
+                                settledAt = itObj.optLong("settledAt", 0L),
+                                kickoffEpoch = itObj.optLong("kickoffEpoch", 0L).takeIf { it > 0L }
                             )
                         )
                     }
@@ -885,15 +1192,18 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                                 dateString = obj.optString("dateString"),
                                 items = itemsList,
                                 totalMatches = obj.optInt("totalMatches", itemsList.size),
-                                averageConfidence = obj.optInt("averageConfidence", 75),
-                                totalCombinedOdds = obj.optString("totalCombinedOdds", "2.50"),
+                                averageConfidence = obj.optInt("averageConfidence", 0),
+                                totalCombinedOdds = obj.optString("totalCombinedOdds", "—"),
                                 currencyCode = obj.optString("currencyCode", _selectedCurrency.value.code),
                                 currencySymbol = obj.optString("currencySymbol", _selectedCurrency.value.symbol),
                                 budgetStake = obj.optDouble("budgetStake", _budget.value.toDouble()).toFloat(),
                                 estimatedPayout = obj.optDouble("estimatedPayout", 0.0),
                                 potentialProfit = obj.optDouble("potentialProfit", 0.0),
                                 targetMin = obj.optDouble("targetMin", _moneyRange.value.start.toDouble()).toFloat(),
-                                targetMax = obj.optDouble("targetMax", _moneyRange.value.endInclusive.toDouble()).toFloat()
+                                targetMax = obj.optDouble("targetMax", _moneyRange.value.endInclusive.toDouble()).toFloat(),
+                                jointProbability = obj.optInt("jointProbability", 0),
+                                outcome = parseOutcome(obj.optString("outcome")),
+                                settledAt = obj.optLong("settledAt", 0L)
                             )
                         )
                     }
@@ -907,6 +1217,14 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
             }
         }
     }
+
+    private fun parseOutcome(raw: String?): com.example.models.BetOutcome =
+        try {
+            if (raw.isNullOrBlank()) com.example.models.BetOutcome.PENDING
+            else com.example.models.BetOutcome.valueOf(raw)
+        } catch (e: Exception) {
+            com.example.models.BetOutcome.PENDING
+        }
 
     private fun persistSlips() {
         try {
@@ -926,6 +1244,9 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                 obj.put("potentialProfit", slip.potentialProfit)
                 obj.put("targetMin", slip.targetMin)
                 obj.put("targetMax", slip.targetMax)
+                obj.put("jointProbability", slip.jointProbability)
+                obj.put("outcome", slip.outcome.name)
+                obj.put("settledAt", slip.settledAt)
 
                 val itemsArray = org.json.JSONArray()
                 slip.items.forEach { item ->
@@ -940,8 +1261,16 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                     itObj.put("recommendedBet", item.recommendedBet)
                     itObj.put("confidence", item.confidence)
                     itObj.put("rationale", item.rationale)
-                    itObj.put("simulatedOdds", item.simulatedOdds)
-                    itObj.put("betTypeCategory", item.betTypeCategory)
+                    item.simulatedOdds?.let { itObj.put("simulatedOdds", it) }
+                    item.betTypeCategory?.let { itObj.put("betTypeCategory", it) }
+                    itObj.put("isModelBacked", item.isModelBacked)
+                    item.edgePercent?.let { itObj.put("edgePercent", it) }
+                    itObj.put("isMarketPrice", item.isMarketPrice)
+                    itObj.put("outcome", item.outcome.name)
+                    item.finalHomeScore?.let { itObj.put("finalHomeScore", it) }
+                    item.finalAwayScore?.let { itObj.put("finalAwayScore", it) }
+                    itObj.put("settledAt", item.settledAt)
+                    item.kickoffEpoch?.let { itObj.put("kickoffEpoch", it) }
                     itemsArray.put(itObj)
                 }
                 obj.put("items", itemsArray)
@@ -953,104 +1282,75 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    /**
+     * Builds a slip from whatever real predictions exist.
+     *
+     * Differences from the previous version, all of which affected the numbers the
+     * user sees:
+     *  - No mock-prediction fallback. If nothing was predicted, no slip is created.
+     *  - Legs are ranked by measured edge and expected value, not by confidence, and
+     *    trimmed to [MAX_SLIP_LEGS]. Ranking on confidence alone selects exactly the
+     *    short-priced favourites where the bookmaker margin is worst.
+     *  - Combined odds are "—" when any leg has no real price, instead of silently
+     *    substituting 1.6 per leg and printing a precise-looking payout.
+     *  - Joint probability is the product of the legs, not their mean.
+     */
     fun saveAndBuildSlip(): com.example.models.SavedPredictionSlip? {
         val batchList = _batchMatchItems.value.filter { it.isSelected }
-        var finishedItems = batchList
-            .filter { it.prediction != null }
-            .map { item ->
-                val pred = item.prediction!!
-                val calculatedOdds = pred.odds
-                val cat = pred.betType.ifBlank { extractBetTypeCategory(pred.recommendedBet) }
-                com.example.models.PredictedBetItem(
-                    matchId = item.matchId,
-                    homeTeam = item.homeTeam,
-                    awayTeam = item.awayTeam,
-                    homeLogo = item.homeLogo,
-                    awayLogo = item.awayLogo,
-                    leagueName = item.leagueName,
-                    startTime = item.startTime,
-                    recommendedBet = pred.recommendedBet,
-                    confidence = pred.confidence,
-                    rationale = pred.rationale,
-                    simulatedOdds = calculatedOdds,
-                    betTypeCategory = cat
-                )
-            }
 
-        // If batch items have no predictions yet (e.g. user jumped straight to result or finished), populate from smart model
-        if (finishedItems.isEmpty() && batchList.isNotEmpty()) {
-            finishedItems = batchList.map { item ->
-                val pred = generateSmartMockPrediction(item.homeTeam, item.awayTeam)
-                val calculatedOdds = pred.odds
-                val cat = pred.betType.ifBlank { extractBetTypeCategory(pred.recommendedBet) }
-                com.example.models.PredictedBetItem(
-                    matchId = item.matchId,
-                    homeTeam = item.homeTeam,
-                    awayTeam = item.awayTeam,
-                    homeLogo = item.homeLogo,
-                    awayLogo = item.awayLogo,
-                    leagueName = item.leagueName,
-                    startTime = item.startTime,
-                    recommendedBet = pred.recommendedBet,
-                    confidence = pred.confidence,
-                    rationale = pred.rationale,
-                    simulatedOdds = calculatedOdds,
-                    betTypeCategory = cat
+        val fromBatch = batchList.mapNotNull { item ->
+            item.prediction?.let {
+                toBetItem(
+                    item.matchId, item.homeTeam, item.awayTeam, item.homeLogo,
+                    item.awayLogo, item.leagueName, item.startTime, it, item.kickoffEpoch
                 )
             }
         }
 
-        // Fallback: check matches from countries that have predictions
-        if (finishedItems.isEmpty()) {
-            val countryMatches = _countries.value.flatMap { country ->
+        // Fall back to fixtures predicted individually outside the batch flow.
+        val candidates = if (fromBatch.isNotEmpty()) fromBatch else {
+            _countries.value.flatMap { country ->
                 country.leagues.flatMap { league ->
-                    league.matches.filter { it.prediction != null }.map { match ->
-                        val pred = match.prediction!!
-                        val calculatedOdds = pred.odds
-                        val cat = pred.betType.ifBlank { extractBetTypeCategory(pred.recommendedBet) }
-                        com.example.models.PredictedBetItem(
-                            matchId = match.id,
-                            homeTeam = match.homeTeam,
-                            awayTeam = match.awayTeam,
-                            homeLogo = match.homeLogo,
-                            awayLogo = match.awayLogo,
-                            leagueName = league.name,
-                            startTime = match.startTime,
-                            recommendedBet = pred.recommendedBet,
-                            confidence = pred.confidence,
-                            rationale = pred.rationale,
-                            simulatedOdds = calculatedOdds,
-                            betTypeCategory = cat
-                        )
+                    league.matches.mapNotNull { match ->
+                        match.prediction?.let {
+                            toBetItem(
+                                match.id, match.homeTeam, match.awayTeam, match.homeLogo,
+                                match.awayLogo, league.name, match.startTime, it,
+                                match.kickoffEpoch
+                            )
+                        }
                     }
                 }
             }
-            finishedItems = countryMatches
         }
 
-        // STRICT GUARD: Do not create 0-item empty slips!
-        if (finishedItems.isEmpty()) {
-            android.util.Log.w("PredictorViewModel", "saveAndBuildSlip: No predictions available, skipping 0-item slip creation.")
-            return _currentSlip.value
+        if (candidates.isEmpty()) {
+            android.util.Log.w("PredictorViewModel", "saveAndBuildSlip: no predictions available; not creating a slip.")
+            return null
         }
+
+        val finishedItems = com.example.network.SlipMath.selectBestLegs(candidates, MAX_SLIP_LEGS)
 
         val totalMatches = finishedItems.size
-        val avgConf = if (totalMatches > 0) finishedItems.map { it.confidence }.average().toInt() else 0
-        var totalOdds = 1.0
-        finishedItems.forEach {
-            totalOdds *= (it.simulatedOdds.toDoubleOrNull() ?: 1.6)
-        }
-        val oddsStr = String.format(Locale.US, "%.2f", totalOdds.coerceAtMost(9999.0))
+        val avgConf = finishedItems.map { it.confidence }.average().toInt()
+        val jointP = com.example.network.SlipMath.jointProbability(finishedItems)
+        val combined = com.example.network.SlipMath.combinedOdds(finishedItems)
+
+        val oddsStr = combined?.let { String.format(Locale.US, "%.2f", it.coerceAtMost(9999.0)) } ?: "—"
 
         val curr = _selectedCurrency.value
         val budgetStake = _budget.value
-        val estimatedPayout = budgetStake * totalOdds
+        // Only a real combined price yields a real payout figure.
+        val estimatedPayout = combined?.let { budgetStake * it } ?: 0.0
         val potentialProfit = (estimatedPayout - budgetStake).coerceAtLeast(0.0)
         val targetMin = _moneyRange.value.start
         val targetMax = _moneyRange.value.endInclusive
 
         val newSlip = com.example.models.SavedPredictionSlip(
-            slipId = "SLIP-${System.currentTimeMillis() % 1000000}",
+            // UUID suffix: `currentTimeMillis() % 1000000` wraps every ~16.7 minutes,
+            // and slips are de-duplicated by slipId, so a collision silently discarded
+            // a slip.
+            slipId = "SLIP-${System.currentTimeMillis()}-${java.util.UUID.randomUUID().toString().take(6)}",
             timestamp = System.currentTimeMillis(),
             dateString = SimpleDateFormat("MMM dd, yyyy • HH:mm", Locale.getDefault()).format(Date()),
             items = finishedItems,
@@ -1063,7 +1363,11 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
             estimatedPayout = estimatedPayout,
             potentialProfit = potentialProfit,
             targetMin = targetMin,
-            targetMax = targetMax
+            targetMax = targetMax,
+            // Rounded, not truncated. A long slip's joint chance is often a fraction
+            // of a percent and `toInt()` floors it to a flat 0%, which reads as
+            // "impossible" rather than "very unlikely".
+            jointProbability = jointP?.let { Math.round(it * 100).toInt() } ?: 0
         )
 
         _currentSlip.value = newSlip
@@ -1072,6 +1376,172 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
         syncSlipToFirestore(newSlip)
 
         return newSlip
+    }
+
+    private fun toBetItem(
+        matchId: Int,
+        homeTeam: String,
+        awayTeam: String,
+        homeLogo: String?,
+        awayLogo: String?,
+        leagueName: String,
+        startTime: String,
+        pred: PredictionResult,
+        kickoffEpoch: Long? = null
+    ) = com.example.models.PredictedBetItem(
+        matchId = matchId,
+        homeTeam = homeTeam,
+        awayTeam = awayTeam,
+        homeLogo = homeLogo,
+        awayLogo = awayLogo,
+        leagueName = leagueName,
+        startTime = startTime,
+        recommendedBet = pred.recommendedBet,
+        confidence = pred.confidence,
+        rationale = pred.rationale,
+        // Prefer the real market price; fall back to the model's fair odds, and
+        // record which of the two this is so the UI can be honest about it.
+        simulatedOdds = pred.marketOdds ?: pred.odds,
+        betTypeCategory = pred.betType?.takeIf { it.isNotBlank() }
+            ?: extractBetTypeCategory(pred.recommendedBet),
+        isModelBacked = pred.isModelBacked,
+        edgePercent = pred.edgePercent,
+        isMarketPrice = pred.marketOdds != null,
+        kickoffEpoch = kickoffEpoch
+    )
+
+    // ==================== SETTLEMENT & HIT-RATE TRACKING ====================
+
+    private val _accuracyStats = MutableStateFlow(com.example.models.AccuracyStats())
+    val accuracyStats: StateFlow<com.example.models.AccuracyStats> = _accuracyStats.asStateFlow()
+
+    private val _isSettling = MutableStateFlow(false)
+    val isSettling: StateFlow<Boolean> = _isSettling.asStateFlow()
+
+    /**
+     * Fetches final scores for unsettled legs and grades them.
+     *
+     * This is what makes the confidence numbers mean anything: until predictions are
+     * checked against results, a claimed 80% is unfalsifiable and the model can be
+     * arbitrarily overconfident without anything contradicting it.
+     *
+     * Cost is bounded — [ResultsRepository] batches 20 fixture ids per request and
+     * this only ever issues [SETTLEMENT_REQUEST_BUDGET] of them, so a full pass is
+     * ~2 API calls regardless of backlog size.
+     */
+    fun settlePendingPredictions() {
+        if (_isSettling.value) return
+
+        val apiKey = keyManager.getActiveKey(com.example.keymanager.ApiRole.API_FOOTBALL)
+        if (apiKey.isNullOrBlank()) {
+            _errorMessage.value = "An API-Football key is required to check results."
+            return
+        }
+
+        // Only ask about fixtures that can plausibly have finished. A match needs
+        // ~2h from kickoff, so anything more recent than that is guaranteed to come
+        // back NS or in-play — and with only SETTLEMENT_REQUEST_BUDGET * 20 ids per
+        // pass, one round of upcoming fixtures could consume the entire budget and
+        // leave a genuinely settleable backlog ungraded.
+        //
+        // Legs with no recorded kickoff (saved before the field existed) are included
+        // rather than dropped, since excluding them would make them permanently
+        // unsettleable. Ordering is oldest-first so the truncation at the budget
+        // boundary keeps the most likely-finished legs.
+        val nowSeconds = System.currentTimeMillis() / 1000
+        val settleableAfter = nowSeconds - MIN_SECONDS_AFTER_KICKOFF
+
+        val pending = _savedSlipsHistory.value
+            .flatMap { it.items }
+            .filter { it.outcome == com.example.models.BetOutcome.PENDING }
+            .filter { leg -> leg.kickoffEpoch?.let { it <= settleableAfter } ?: true }
+            .sortedBy { it.kickoffEpoch ?: 0L }
+            .map { it.matchId }
+            .distinct()
+
+        if (pending.isEmpty()) {
+            recomputeAccuracy()
+            return
+        }
+
+        viewModelScope.launch {
+            _isSettling.value = true
+            try {
+                val results = resultsRepository.fetchResults(
+                    fixtureIds = pending,
+                    apiKey = apiKey,
+                    maxRequests = SETTLEMENT_REQUEST_BUDGET
+                )
+                if (results.isEmpty()) return@launch
+
+                applySettlement(results)
+                keyManager.reportKeySuccess(com.example.keymanager.ApiRole.API_FOOTBALL, apiKey)
+            } catch (e: Exception) {
+                android.util.Log.w("PredictorViewModel", "settlement failed: ${e.message}")
+            } finally {
+                _isSettling.value = false
+            }
+        }
+    }
+
+    private fun applySettlement(results: Map<Int, com.example.network.FixtureResult>) {
+        val now = System.currentTimeMillis()
+
+        _savedSlipsHistory.update { slips ->
+            slips.map { slip ->
+                var changed = false
+                val gradedItems = slip.items.map { leg ->
+                    if (leg.outcome != com.example.models.BetOutcome.PENDING) return@map leg
+                    val result = results[leg.matchId] ?: return@map leg
+
+                    val outcome = com.example.network.BetSettlement.settle(
+                        pick = leg.recommendedBet,
+                        homeTeam = result.homeTeam.ifBlank { leg.homeTeam },
+                        awayTeam = result.awayTeam.ifBlank { leg.awayTeam },
+                        homeScore = result.homeScore,
+                        awayScore = result.awayScore,
+                        statusShort = result.statusShort,
+                        halftimeHome = result.halftimeHome,
+                        halftimeAway = result.halftimeAway
+                    )
+                    if (outcome == com.example.models.BetOutcome.PENDING) return@map leg
+
+                    changed = true
+                    leg.copy(
+                        outcome = outcome,
+                        finalHomeScore = result.homeScore,
+                        finalAwayScore = result.awayScore,
+                        settledAt = now,
+                        // Backfill kickoff for legs saved before the field existed, so
+                        // future passes can budget around them properly.
+                        kickoffEpoch = leg.kickoffEpoch ?: result.kickoffEpoch
+                    )
+                }
+
+                if (!changed) slip else {
+                    val slipOutcome = com.example.network.SlipMath.slipOutcome(gradedItems)
+                    slip.copy(
+                        items = gradedItems,
+                        outcome = slipOutcome,
+                        settledAt = if (slipOutcome == com.example.models.BetOutcome.PENDING) slip.settledAt else now
+                    )
+                }
+            }
+        }
+
+        // Keep the currently displayed slip in sync with its graded version.
+        _currentSlip.value?.let { current ->
+            _currentSlip.value = _savedSlipsHistory.value.firstOrNull { it.slipId == current.slipId } ?: current
+        }
+
+        persistSlips()
+        recomputeAccuracy()
+        _savedSlipsHistory.value.forEach { syncSlipToFirestore(it) }
+    }
+
+    /** Recomputes realised hit rate, ROI and calibration from settled legs. */
+    fun recomputeAccuracy() {
+        _accuracyStats.value = com.example.network.SlipMath.accuracyFrom(_savedSlipsHistory.value)
     }
 
     fun deleteSlip(slipId: String) {
@@ -1118,6 +1588,9 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                     "potentialProfit" to slip.potentialProfit,
                     "targetMin" to slip.targetMin,
                     "targetMax" to slip.targetMax,
+                    "jointProbability" to slip.jointProbability,
+                    "outcome" to slip.outcome.name,
+                    "settledAt" to slip.settledAt,
                     "userId" to user.userId,
                     "items" to slip.items.map { item ->
                         mapOf(
@@ -1131,8 +1604,18 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                             "recommendedBet" to item.recommendedBet,
                             "confidence" to item.confidence,
                             "rationale" to item.rationale,
-                            "simulatedOdds" to item.simulatedOdds,
-                            "betTypeCategory" to item.betTypeCategory
+                            // Empty string rather than an invented price when unpriced;
+                            // Firestore map values must be non-null.
+                            "simulatedOdds" to (item.simulatedOdds ?: ""),
+                            "betTypeCategory" to (item.betTypeCategory ?: ""),
+                            "isModelBacked" to item.isModelBacked,
+                            "edgePercent" to (item.edgePercent ?: 0.0),
+                            "isMarketPrice" to item.isMarketPrice,
+                            "outcome" to item.outcome.name,
+                            "finalHomeScore" to (item.finalHomeScore ?: -1),
+                            "finalAwayScore" to (item.finalAwayScore ?: -1),
+                            "settledAt" to item.settledAt,
+                            "kickoffEpoch" to (item.kickoffEpoch ?: 0L)
                         )
                     }
                 )
@@ -1257,6 +1740,7 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
     private fun parseSlipDocument(doc: com.google.firebase.firestore.DocumentSnapshot): com.example.models.SavedPredictionSlip? {
         val itemsRaw = doc.get("items") as? List<Map<String, Any>> ?: emptyList()
         val items = itemsRaw.map { itMap ->
+            val pick = itMap["recommendedBet"]?.toString() ?: ""
             com.example.models.PredictedBetItem(
                 matchId = (itMap["matchId"] as? Number)?.toInt() ?: 0,
                 homeTeam = itMap["homeTeam"]?.toString() ?: "",
@@ -1265,20 +1749,32 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                 awayLogo = itMap["awayLogo"]?.toString()?.ifBlank { null },
                 leagueName = itMap["leagueName"]?.toString() ?: "",
                 startTime = itMap["startTime"]?.toString() ?: "",
-                recommendedBet = itMap["recommendedBet"]?.toString() ?: "",
-                confidence = (itMap["confidence"] as? Number)?.toInt() ?: 75,
+                recommendedBet = pick,
+                confidence = (itMap["confidence"] as? Number)?.toInt() ?: 0,
                 rationale = itMap["rationale"]?.toString() ?: "",
-                simulatedOdds = itMap["simulatedOdds"]?.toString() ?: "1.75",
-                betTypeCategory = itMap["betTypeCategory"]?.toString() ?: extractBetTypeCategory(itMap["recommendedBet"]?.toString() ?: "")
+                simulatedOdds = itMap["simulatedOdds"]?.toString()?.ifBlank { null },
+                betTypeCategory = itMap["betTypeCategory"]?.toString()?.ifBlank { null }
+                    ?: extractBetTypeCategory(pick),
+                isModelBacked = itMap["isModelBacked"] as? Boolean ?: false,
+                edgePercent = (itMap["edgePercent"] as? Number)?.toDouble()?.takeIf { it != 0.0 },
+                isMarketPrice = itMap["isMarketPrice"] as? Boolean ?: false,
+                outcome = parseOutcome(itMap["outcome"]?.toString()),
+                finalHomeScore = (itMap["finalHomeScore"] as? Number)?.toInt()?.takeIf { it >= 0 },
+                finalAwayScore = (itMap["finalAwayScore"] as? Number)?.toInt()?.takeIf { it >= 0 },
+                settledAt = (itMap["settledAt"] as? Number)?.toLong() ?: 0L,
+                kickoffEpoch = (itMap["kickoffEpoch"] as? Number)?.toLong()?.takeIf { it > 0L }
             )
         }
 
         if (items.isEmpty()) return null
 
         val totalMatches = doc.getLong("totalMatches")?.toInt() ?: items.size
-        val totalOdds = doc.getString("totalCombinedOdds") ?: "2.50"
+        val totalOdds = doc.getString("totalCombinedOdds") ?: "—"
         val bStake = doc.getDouble("budgetStake")?.toFloat() ?: _budget.value
-        val estPay = doc.getDouble("estimatedPayout") ?: (bStake * (totalOdds.toDoubleOrNull() ?: 2.50))
+        // No 2.50 stand-in: if the document has no payout, leave it at zero rather
+        // than deriving one from a placeholder price.
+        val estPay = doc.getDouble("estimatedPayout")
+            ?: totalOdds.toDoubleOrNull()?.let { bStake * it } ?: 0.0
         val potProf = doc.getDouble("potentialProfit") ?: (estPay - bStake).coerceAtLeast(0.0)
 
         return com.example.models.SavedPredictionSlip(
@@ -1287,7 +1783,7 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
             dateString = doc.getString("dateString") ?: "",
             items = items,
             totalMatches = totalMatches,
-            averageConfidence = doc.getLong("averageConfidence")?.toInt() ?: 75,
+            averageConfidence = doc.getLong("averageConfidence")?.toInt() ?: 0,
             totalCombinedOdds = totalOdds,
             currencyCode = doc.getString("currencyCode") ?: _selectedCurrency.value.code,
             currencySymbol = doc.getString("currencySymbol") ?: _selectedCurrency.value.symbol,
@@ -1295,7 +1791,14 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
             estimatedPayout = estPay,
             potentialProfit = potProf,
             targetMin = doc.getDouble("targetMin")?.toFloat() ?: _moneyRange.value.start,
-            targetMax = doc.getDouble("targetMax")?.toFloat() ?: _moneyRange.value.endInclusive
+            targetMax = doc.getDouble("targetMax")?.toFloat() ?: _moneyRange.value.endInclusive,
+            // Recompute rather than trusting a stored value written by an older build
+            // that averaged the legs instead of multiplying them.
+            jointProbability = doc.getLong("jointProbability")?.toInt()
+                ?: com.example.network.SlipMath.jointProbability(items)?.let { (it * 100).toInt() }
+                ?: 0,
+            outcome = parseOutcome(doc.getString("outcome")),
+            settledAt = doc.getLong("settledAt") ?: 0L
         )
     }
 
