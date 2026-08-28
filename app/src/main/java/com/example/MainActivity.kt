@@ -15,6 +15,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
@@ -335,6 +339,7 @@ fun HomeScreen(
                 }
             }
         } else {
+            val focusManager = LocalFocusManager.current
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -427,6 +432,8 @@ fun HomeScreen(
                             ),
                             cursorBrush = SolidColor(AccentOrange),
                             singleLine = true,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                            keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
                             modifier = Modifier.weight(1f),
                             decorationBox = { innerTextField ->
                                 if (searchQuery.isEmpty()) {
@@ -887,7 +894,7 @@ fun PredictionConfigScreen(
                 title = { 
                     Column {
                         Text("Prediction Config", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                        Text("Cloud Synced • Firebase Firestore", color = AccentGreen, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                        Text("AI Strategy & Market Calibration", color = AccentGreen, fontSize = 11.sp, fontWeight = FontWeight.Medium)
                     }
                 },
                 navigationIcon = {
@@ -911,7 +918,7 @@ fun PredictionConfigScreen(
                                     .background(AccentGreen, CircleShape)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Firebase Active", color = TextSub, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Text("Engine Ready", color = TextSub, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 },

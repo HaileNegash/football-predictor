@@ -1,10 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
-
-    <uses-sdk tools:overrideLibrary="com.google.firebase, com.google.firebase.firestore, com.google.firebase.common, com.google.firebase.components, com.google.android.gms.base, com.google.android.gms.tasks, com.google.android.gms.common" />
 
     <application
         android:name=".PredictorApplication"
@@ -15,10 +12,12 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
+        android:enableOnBackInvokedCallback="true"
         android:theme="@style/Theme.MyApplication">
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:windowSoftInputMode="adjustResize"
             android:label="@string/app_name"
             android:theme="@style/Theme.MyApplication">
             <intent-filter>

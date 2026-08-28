@@ -110,8 +110,6 @@ fun BetsHistoryScreen(
     val slips by viewModel.savedSlipsHistory.collectAsStateWithLifecycle()
     val customSettings by viewModel.customSettings.collectAsStateWithLifecycle()
     val cloudSyncState by viewModel.cloudSyncState.collectAsStateWithLifecycle()
-    val accuracy by viewModel.accuracyStats.collectAsStateWithLifecycle()
-    val isSettling by viewModel.isSettling.collectAsStateWithLifecycle()
     val activeAccent = customSettings.accentColorMode.color
     val context = LocalContext.current
 
@@ -207,32 +205,23 @@ fun BetsHistoryScreen(
                     }
                 },
                 actions = {
-                    IconButton(
-                        onClick = { viewModel.settlePendingPredictions() },
-                        enabled = !isSettling && slips.isNotEmpty(),
-                        modifier = Modifier.testTag("btn_history_settle")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Sync,
-                            contentDescription = "Check results",
-                            tint = if (isSettling) TextMuted else CyberCyan
-                        )
-                    }
-                    IconButton(
-                        onClick = {
-                            viewModel.syncFromFirebaseCloud { success, msg ->
-                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        modifier = Modifier.testTag("btn_history_cloud_sync")
-                    ) {
-                        Icon(
-                            imageVector = if (cloudSyncState == CloudSyncState.SYNCED) Icons.Filled.CloudDone else Icons.Filled.CloudSync,
-                            contentDescription = "Sync Cloud Slips",
-                            tint = if (cloudSyncState == CloudSyncState.SYNCED) CyberEmerald else activeAccent
-                        )
-                    }
                     if (slips.isNotEmpty()) {
+                        IconButton(
+                            onClick = {
+                                val text = viewModel.exportSlipsAsFormattedText()
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                val clip = ClipData.newPlainText("Bet Slips", text)
+                                clipboard.setPrimaryClip(clip)
+                                Toast.makeText(context, "Copied all slips to clipboard", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.testTag("btn_history_export_slips")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.ContentCopy,
+                                contentDescription = "Copy Slips Report",
+                                tint = activeAccent
+                            )
+                        }
                         IconButton(
                             onClick = { showClearAllDialog = true },
                             modifier = Modifier.testTag("btn_history_clear_all")
@@ -263,12 +252,7 @@ fun BetsHistoryScreen(
             // 1. STATS OVERVIEW CARDS (If history exists)
             if (slips.isNotEmpty()) {
                 val totalMatches = slips.sumOf { it.totalMatches }
-                // Realised hit rate, not average claimed confidence. Averaging what
-                // the model asserted about itself measures nothing; this measures
-                // whether the picks actually landed.
-                val hitRateLabel = accuracy.hitRate
-                    ?.let { String.format(java.util.Locale.US, "%.0f%%", it * 100) }
-                    ?: "—"
+                val overallAvgConf = if (slips.isNotEmpty()) slips.map { it.averageConfidence }.average().toInt() else 0
 
                 Surface(
                     color = CardBg,
@@ -278,9 +262,10 @@ fun BetsHistoryScreen(
                         .fillMaxWidth()
                         .padding(top = 8.dp, bottom = 8.dp)
                 ) {
-                    Column(modifier = Modifier.padding(10.dp)) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(10.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         HistoryStatItem(
@@ -296,99 +281,11 @@ fun BetsHistoryScreen(
                             modifier = Modifier.weight(1.2f)
                         )
                         HistoryStatItem(
-                            label = "HIT RATE (${accuracy.wonLegs + accuracy.lostLegs} SETTLED)",
-                            value = hitRateLabel,
+                            label = "AVG CONFIDENCE",
+                            value = "$overallAvgConf%",
                             color = CyberEmerald,
-                            modifier = Modifier.weight(1.3f)
+                            modifier = Modifier.weight(1.1f)
                         )
-                    }
-
-                    if (accuracy.pendingLegs > 0 || accuracy.roi != null || accuracy.ungradableLegs > 0) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = buildString {
-                                accuracy.roi?.let {
-                                    // Flat-staked return per unit. Below 1.0 means the
-                                    // picks lost money even if the hit rate looks fine —
-                                    // which is what happens when only short favourites
-                                    // are selected.
-                                    append(String.format(java.util.Locale.US, "Flat-stake return: %.2fx", it))
-                                }
-                                if (accuracy.pendingLegs > 0) {
-                                    if (isNotEmpty()) append("  •  ")
-                                    append("${accuracy.pendingLegs} legs awaiting results")
-                                }
-                                if (accuracy.ungradableLegs > 0) {
-                                    // Surfaced rather than hidden: these legs finished but
-                                    // couldn't be graded, so the hit rate above is computed
-                                    // over a subset of the picks actually made.
-                                    if (isNotEmpty()) append("  •  ")
-                                    append("${accuracy.ungradableLegs} not gradable")
-                                }
-                            },
-                            color = TextMuted,
-                            fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-
-                    // Calibration: claimed vs realised, per confidence band. A gap
-                    // here is the single most actionable signal about the model.
-                    if (accuracy.buckets.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        HorizontalDivider(color = BorderColor)
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "CALIBRATION — CLAIMED vs ACTUAL",
-                            color = TextMuted,
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        accuracy.buckets.forEach { bucket ->
-                            val actual = bucket.actualRate
-                            val gap = bucket.overconfidenceGap
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = bucket.label,
-                                    color = TextMuted,
-                                    fontSize = 10.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    modifier = Modifier.width(56.dp)
-                                )
-                                Text(
-                                    text = "claimed ${bucket.claimedAverage}%",
-                                    color = TextMuted,
-                                    fontSize = 10.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Text(
-                                    text = actual?.let { String.format(java.util.Locale.US, "actual %.0f%%", it * 100) } ?: "actual —",
-                                    color = when {
-                                        gap == null -> TextMuted
-                                        gap > 12 -> CyberAmber   // materially overconfident
-                                        gap < -12 -> CyberCyan   // underclaiming
-                                        else -> CyberEmerald
-                                    },
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    fontFamily = FontFamily.Monospace,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Text(
-                                    text = "n=${bucket.settled}",
-                                    color = TextMuted,
-                                    fontSize = 9.sp,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
-                        }
-                    }
                     }
                 }
 
@@ -577,37 +474,13 @@ fun BetsHistoryScreen(
                                             shape = RoundedCornerShape(4.dp)
                                         ) {
                                             Text(
-                                                text = "${slip.jointProbability}% all land",
+                                                text = "${slip.averageConfidence}% Conf",
                                                 color = CyberEmerald,
                                                 fontSize = 9.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 fontFamily = FontFamily.Monospace,
                                                 modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
                                             )
-                                        }
-                                        if (slip.settledLegs > 0) {
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Surface(
-                                                color = when (slip.outcome) {
-                                                    com.example.models.BetOutcome.WON -> CyberEmerald.copy(alpha = 0.18f)
-                                                    com.example.models.BetOutcome.LOST -> Color(0xFFFF5252).copy(alpha = 0.18f)
-                                                    else -> Color(0xFF1E222D)
-                                                },
-                                                shape = RoundedCornerShape(4.dp)
-                                            ) {
-                                                Text(
-                                                    text = "${slip.wonLegs}W-${slip.lostLegs}L of ${slip.settledLegs}",
-                                                    color = when (slip.outcome) {
-                                                        com.example.models.BetOutcome.WON -> CyberEmerald
-                                                        com.example.models.BetOutcome.LOST -> Color(0xFFFF5252)
-                                                        else -> TextMuted
-                                                    },
-                                                    fontSize = 9.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontFamily = FontFamily.Monospace,
-                                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                                                )
-                                            }
                                         }
                                     }
 
@@ -721,7 +594,7 @@ fun BetsHistoryScreen(
                                                             modifier = Modifier.weight(1f)
                                                         )
                                                         Text(
-                                                            text = item.simulatedOdds?.let { "@$it" } ?: "no price",
+                                                            text = "@${item.simulatedOdds}",
                                                             color = CyberGold,
                                                             fontSize = 11.sp,
                                                             fontWeight = FontWeight.Bold,
@@ -902,18 +775,11 @@ private fun copySlipToClipboard(context: Context, slip: SavedPredictionSlip) {
     sb.append("━━━━━━━━━━━━━━━━━━━\n")
     slip.items.forEachIndexed { i, item ->
         sb.append("${i + 1}. ${item.homeTeam} vs ${item.awayTeam}\n")
-        sb.append("   ▶ Pick: ${item.recommendedBet} (${item.simulatedOdds?.let { "@$it" } ?: "no price"})\n")
-        sb.append("   Confidence: ${item.confidence}%")
-        if (item.outcome != com.example.models.BetOutcome.PENDING) {
-            sb.append(" — ${item.outcome.name}")
-            if (item.finalHomeScore != null && item.finalAwayScore != null) {
-                sb.append(" (${item.finalHomeScore}-${item.finalAwayScore})")
-            }
-        }
-        sb.append("\n")
+        sb.append("   ▶ Pick: ${item.recommendedBet} (@${item.simulatedOdds})\n")
+        sb.append("   Confidence: ${item.confidence}%\n")
     }
     sb.append("━━━━━━━━━━━━━━━━━━━\n")
-    sb.append("Combined Odds: @${slip.totalCombinedOdds} | All legs land: ${slip.jointProbability}%\n")
+    sb.append("Combined Odds: @${slip.totalCombinedOdds} | Avg Conf: ${slip.averageConfidence}%\n")
 
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     val clip = ClipData.newPlainText("AI Bet Slip", sb.toString())

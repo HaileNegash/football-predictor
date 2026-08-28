@@ -105,13 +105,8 @@ fun AgentPredictionScreen(
     val selectedItems = batchItems.filter { it.isSelected }
     val totalSelected = selectedItems.size
     val totalFinished = selectedItems.count { it.status == BatchItemStatus.FINISHED }
-    val totalFailed = selectedItems.count { it.status == BatchItemStatus.FAILED }
-    // A failed leg is settled, not still in flight. Counting only FINISHED left the
-    // progress bar stuck short of full and the run permanently "in progress" whenever
-    // any prediction errored.
-    val totalSettled = totalFinished + totalFailed
-    val isAllFinished = totalSelected > 0 && totalSettled == totalSelected && !isRunning
-    val progress = if (totalSelected > 0) totalSettled.toFloat() / totalSelected.toFloat() else 0f
+    val isAllFinished = totalSelected > 0 && totalFinished == totalSelected && !isRunning
+    val progress = if (totalSelected > 0) totalFinished.toFloat() / totalSelected.toFloat() else 0f
 
     val currentMatch = if (currentIndex in batchItems.indices) {
         batchItems[currentIndex]
@@ -259,7 +254,7 @@ fun AgentPredictionScreen(
                                 )
                                 Spacer(modifier = Modifier.width(10.dp))
                                 Text(
-                                    "Processing ($totalSettled/$totalSelected Completed)...",
+                                    "Processing ($totalFinished/$totalSelected Completed)...",
                                     color = TextMuted,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 13.sp,
@@ -334,14 +329,7 @@ fun AgentPredictionScreen(
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                // Failures are called out separately rather than folded
-                                // into "Done", so a run that mostly errored can't look
-                                // like a run that mostly succeeded.
-                                text = if (totalFailed > 0) {
-                                    "Done $totalFinished / $totalSelected · $totalFailed failed"
-                                } else {
-                                    "Done $totalFinished / $totalSelected"
-                                },
+                                text = "Done $totalFinished / $totalSelected",
                                 color = TextWhite,
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.ExtraBold,
@@ -353,7 +341,7 @@ fun AgentPredictionScreen(
                                 shape = RoundedCornerShape(6.dp),
                                 border = BorderStroke(1.dp, if (isAllFinished) CyberEmerald else BorderColor)
                             ) {
-                                val remaining = (totalSelected - totalSettled).coerceAtLeast(0)
+                                val remaining = (totalSelected - totalFinished).coerceAtLeast(0)
                                 Text(
                                     text = if (isAllFinished) "100%" else "$remaining Left",
                                     color = if (isAllFinished) CyberEmerald else activeAccent,
@@ -457,43 +445,23 @@ fun AgentPredictionScreen(
                         Spacer(modifier = Modifier.height(2.dp))
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            // A failed leg gets its own glyph and colour. Previously a
-                            // null prediction fell through to "Predictions Finalized",
-                            // which read as success for a match that had actually errored.
-                            val failed = currentMatch?.status == BatchItemStatus.FAILED
                             Text(
-                                text = when {
-                                    isRunning -> "▶ "
-                                    failed -> "✕ "
-                                    isAllFinished -> "✔ "
-                                    else -> "⏳ "
-                                },
-                                color = when {
-                                    isRunning -> activeAccent
-                                    failed -> Color(0xFFFF5252)
-                                    isAllFinished -> CyberEmerald
-                                    else -> TextMuted
-                                },
+                                text = if (isRunning) "▶ " else if (isAllFinished) "✔ " else "⏳ ",
+                                color = if (isRunning) activeAccent else if (isAllFinished) CyberEmerald else TextMuted,
                                 fontSize = 10.sp
                             )
                             Text(
-                                text = when {
-                                    failed ->
-                                        "Failed: ${currentMatch?.failureReason ?: "no prediction returned"}"
-                                    isRunning -> currentMatch?.currentAgentAction ?: "Predicting..."
-                                    isAllFinished -> currentMatch?.prediction?.recommendedBet
-                                        ?.let { "Ready: $it" }
-                                        ?: "No prediction for this match"
-                                    else -> "Queued in pipeline (${currentMatch?.startTime ?: "Upcoming"})"
+                                text = if (isRunning) {
+                                    currentMatch?.currentAgentAction ?: "Predicting..."
+                                } else if (isAllFinished) {
+                                    "Ready: ${currentMatch?.prediction?.recommendedBet ?: "Predictions Finalized"}"
+                                } else {
+                                    "Queued in pipeline (${currentMatch?.startTime ?: "Upcoming"})"
                                 },
-                                color = when {
-                                    failed -> Color(0xFFFF5252)
-                                    isAllFinished -> CyberEmerald
-                                    else -> TextMuted
-                                },
+                                color = if (isAllFinished) CyberEmerald else TextMuted,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Medium,
-                                maxLines = 2,
+                                maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                         }

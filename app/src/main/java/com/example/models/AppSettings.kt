@@ -87,6 +87,94 @@ enum class OddsFormat(
     }
 }
 
+enum class AiReasoningDepth(
+    val id: String,
+    val title: String,
+    val subtitle: String,
+    val iconEmoji: String
+) {
+    FAST_TACTICAL(
+        id = "fast",
+        title = "Fast Tactical",
+        subtitle = "Instant Poisson & Goal Expectancy analysis",
+        iconEmoji = "⚡"
+    ),
+    DEEP_NEURAL(
+        id = "deep",
+        title = "Deep Neural Matrix",
+        subtitle = "Full Form, Head-to-Head & Momentum synthesis",
+        iconEmoji = "🧠"
+    ),
+    QUANTUM_SIMULATION(
+        id = "quantum",
+        title = "Quantum Monte Carlo",
+        subtitle = "10,000 Sim iterations & probability edge evaluation",
+        iconEmoji = "🌌"
+    );
+
+    companion object {
+        fun fromId(id: String): AiReasoningDepth = entries.find { it.id == id } ?: DEEP_NEURAL
+    }
+}
+
+enum class RiskTolerance(
+    val id: String,
+    val title: String,
+    val subtitle: String,
+    val badge: String
+) {
+    ULTRA_SAFE(
+        id = "safe",
+        title = "Ultra Safe",
+        subtitle = "Prioritize >80% Win Probabilities & Safe Lines (Double Chance / Under/Over)",
+        badge = "🛡️ Safe"
+    ),
+    BALANCED_VALUE(
+        id = "balanced",
+        title = "Balanced Value",
+        subtitle = "Optimal expected value ratio for Singles and Doubles",
+        badge = "⚖️ Value"
+    ),
+    AGGRESSIVE_ACCUMULATOR(
+        id = "aggressive",
+        title = "Aggressive Multi-Leg",
+        subtitle = "High combined odds value picks for Big Accumulators",
+        badge = "🚀 High Odds"
+    );
+
+    companion object {
+        fun fromId(id: String): RiskTolerance = entries.find { it.id == id } ?: BALANCED_VALUE
+    }
+}
+
+data class UserAiModel(
+    val id: String,
+    val name: String,
+    val provider: String = "Custom",
+    val endpointUrl: String = "https://api.openai.com/v1/",
+    val apiKey: String = "",
+    val badge: String = "Added",
+    val description: String = "Added AI prediction model",
+    val addedAt: Long = System.currentTimeMillis()
+)
+
+data class AiModelInfo(
+    val id: String,
+    val name: String,
+    val provider: String,
+    val badge: String,
+    val description: String
+)
+
+val SupportedAiModels = listOf(
+    AiModelInfo("gemini-2.5-flash", "Gemini 2.5 Flash", "Google DeepMind", "Recommended", "Lightning fast, high accuracy match predictor"),
+    AiModelInfo("gemini-2.5-pro", "Gemini 2.5 Pro", "Google DeepMind", "Deep Reasoning", "Deep tactical reasoning & injury impact analysis"),
+    AiModelInfo("deepseek-r1", "DeepSeek R1", "DeepSeek", "Chain of Thought", "Mathematical breakdown & reasoning verification"),
+    AiModelInfo("gpt-4o-mini", "GPT-4o Mini", "OpenAI", "Fast", "Compact sports analytics & expected value model"),
+    AiModelInfo("claude-3-5-sonnet", "Claude 3.5 Sonnet", "Anthropic", "Context Master", "Holistic form analysis & tactical matchup dynamics"),
+    AiModelInfo("custom", "Custom Model", "OpenAI / Custom", "Configurable", "User-specified model identifier and endpoint")
+)
+
 data class AppCustomSettings(
     val themeMode: ThemeMode = ThemeMode.CYBER_DARK,
     val accentColorMode: AccentColorMode = AccentColorMode.ORANGE,
@@ -94,5 +182,13 @@ data class AppCustomSettings(
     val autoRefreshSec: Int = 30, // 0 = manual, 15, 30, 60
     val showFinishedMatches: Boolean = true,
     val hapticsEnabled: Boolean = true,
-    val dataSaver: Boolean = false
+    val dataSaver: Boolean = false,
+    val compactCardMode: Boolean = false,
+    val aiReasoningDepth: AiReasoningDepth = AiReasoningDepth.DEEP_NEURAL,
+    val riskTolerance: RiskTolerance = RiskTolerance.BALANCED_VALUE,
+    val minConfidenceThreshold: Int = 65,
+    val activeAiModelId: String = "gemini-2.5-flash",
+    val customAiModelName: String = "",
+    val customAiEndpointUrl: String = "",
+    val customTacticalPrompt: String = ""
 )

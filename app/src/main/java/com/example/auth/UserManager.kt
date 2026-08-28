@@ -4,9 +4,6 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.example.models.UserProfile
 import com.example.models.UserTier
-import com.example.firebase.FirebaseDatabaseProvider
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,9 +20,6 @@ class UserManager(private val context: Context) {
         context.getSharedPreferences("football_predictor_user_prefs", Context.MODE_PRIVATE)
 
     private val scope = CoroutineScope(Dispatchers.IO)
-    private val firestore: FirebaseFirestore? by lazy {
-        FirebaseDatabaseProvider.getFirestore(context, useVaultDb = true)
-    }
 
     private val _currentUser = MutableStateFlow(loadStoredUser())
     val currentUser: StateFlow<UserProfile> = _currentUser.asStateFlow()
@@ -38,10 +32,6 @@ class UserManager(private val context: Context) {
 
     init {
         checkAndResetDailyQuota()
-        // If user enabled auto sign in, perform silent sync
-        if (_currentUser.value.isAutoSignedIn && _currentUser.value.email != "guest@footballpredictor.app") {
-            syncUserFromCloud(_currentUser.value.userId)
-        }
     }
 
     private fun getTodayDateString(): String {
@@ -69,7 +59,7 @@ class UserManager(private val context: Context) {
         val photoUrl = prefs.getString("user_photo", null)
         val tierStr = prefs.getString("user_tier", UserTier.FREE.name) ?: UserTier.FREE.name
         val tier = try { UserTier.valueOf(tierStr) } catch (e: Exception) { UserTier.FREE }
-        val dailyLimit = prefs.getInt("user_daily_limit", 5)
+        val dailyLimit = prefs.getInt("user_daily_limit", if (tier == UserTier.PRO_VIP) 999 else 5)
         val used = prefs.getInt("user_used_today", 0)
         val lastDate = prefs.getString("user_last_date", today) ?: today
         val autoSign = prefs.getBoolean("user_auto_sign_in", true)
@@ -108,12 +98,38 @@ class UserManager(private val context: Context) {
             .apply()
     }
 
+    fun updateDisplayName(newName: String) {
+        val clean = newName.trim().ifBlank { "Football Fan" }
+        val updated = _currentUser.value.copy(displayName = clean)
+        saveUserLocal(updated)
+        _currentUser.value = updated
+    }
+
+    fun toggleUserTier(toVip: Boolean? = null) {
+        val cur = _currentUser.value
+        val newTier = if (toVip != null) {
+            if (toVip) UserTier.PRO_VIP else UserTier.FREE
+        } else {
+            if (cur.tier == UserTier.PRO_VIP) UserTier.FREE else UserTier.PRO_VIP
+        }
+        val limit = if (newTier == UserTier.PRO_VIP) 999 else 5
+        val updated = cur.copy(tier = newTier, dailyLimit = limit)
+        saveUserLocal(updated)
+        _currentUser.value = updated
+    }
+
+    fun resetDailyPredictions() {
+        val updated = _currentUser.value.copy(dailyPredictionsUsed = 0)
+        saveUserLocal(updated)
+        _currentUser.value = updated
+    }
+
     fun signInWithGoogleAuto(email: String, displayName: String, photoUrl: String? = null, onComplete: (Boolean, String) -> Unit) {
         _isLoading.value = true
         scope.launch {
             try {
                 val cleanEmail = email.trim().lowercase()
-                val userId = "google_${cleanEmail.replace(".", "_").replace("@", "_")}"
+                val userId = "local_${cleanEmail.replace(".", "_").replace("@", "_")}"
                 val today = getTodayDateString()
 
                 val user = UserProfile(
@@ -121,8 +137,8 @@ class UserManager(private val context: Context) {
                     email = cleanEmail,
                     displayName = displayName.ifBlank { cleanEmail.substringBefore("@").replaceFirstChar { it.uppercase() } },
                     photoUrl = photoUrl,
-                    tier = UserTier.FREE,
-                    dailyLimit = 5,
+                    tier = UserTier.PRO_VIP,
+                    dailyLimit = 999,
                     dailyPredictionsUsed = 0,
                     isAutoSignedIn = true,
                     rememberPassword = true,
@@ -132,12 +148,11 @@ class UserManager(private val context: Context) {
 
                 saveUserLocal(user)
                 _currentUser.value = user
-                syncUserToCloud(user)
 
                 _authMessage.value = "Welcome back, ${user.displayName}!"
-                onComplete(true, "Signed in with Google as ${user.email}")
+                onComplete(true, "Signed in as ${user.email} (VIP Unlimited)")
             } catch (e: Exception) {
-                onComplete(false, "Google Sign-In failed: ${e.message}")
+                onComplete(false, "Sign-In failed: ${e.message}")
             } finally {
                 _isLoading.value = false
             }
@@ -161,7 +176,6 @@ class UserManager(private val context: Context) {
                 val userId = "usr_${cleanEmail.replace(".", "_").replace("@", "_")}"
                 val today = getTodayDateString()
 
-                // Save password locally if remember me is true
                 if (rememberMe) {
                     prefs.edit()
                         .putString("saved_auth_email", cleanEmail)
@@ -185,7 +199,6 @@ class UserManager(private val context: Context) {
 
                 saveUserLocal(user)
                 _currentUser.value = user
-                syncUserToCloud(user)
 
                 onComplete(true, "Successfully signed in as ${user.email}")
             } catch (e: Exception) {
@@ -240,55 +253,6 @@ class UserManager(private val context: Context) {
         val updated = user.copy(dailyPredictionsUsed = user.dailyPredictionsUsed + 1)
         saveUserLocal(updated)
         _currentUser.value = updated
-        syncUserToCloud(updated)
         return true // Unlimited predictions enabled
-    }
-
-    private fun syncUserToCloud(user: UserProfile) {
-        val db = firestore ?: return
-        if (user.email == "guest@footballpredictor.app") return
-
-        val userDoc = mapOf(
-            "userId" to user.userId,
-            "email" to user.email,
-            "displayName" to user.displayName,
-            "photoUrl" to user.photoUrl,
-            "tier" to user.tier.name,
-            "dailyLimit" to user.dailyLimit,
-            "dailyPredictionsUsed" to user.dailyPredictionsUsed,
-            "lastActiveDate" to user.lastActiveDate,
-            "joinedAt" to user.joinedAt,
-            "isBanned" to user.isBanned,
-            "updatedAt" to System.currentTimeMillis()
-        )
-
-        db.collection("users")
-            .document(user.userId)
-            .set(userDoc, SetOptions.merge())
-            .addOnFailureListener {
-                // local fallback works seamlessly
-            }
-    }
-
-    private fun syncUserFromCloud(userId: String) {
-        val db = firestore ?: return
-        db.collection("users").document(userId).get()
-            .addOnSuccessListener { doc ->
-                if (doc != null && doc.exists()) {
-                    val tierStr = doc.getString("tier") ?: UserTier.FREE.name
-                    val tier = try { UserTier.valueOf(tierStr) } catch (e: Exception) { UserTier.FREE }
-                    val dailyLimit = doc.getLong("dailyLimit")?.toInt() ?: 5
-                    val isBanned = doc.getBoolean("isBanned") ?: false
-
-                    val current = _currentUser.value
-                    val updated = current.copy(
-                        tier = tier,
-                        dailyLimit = dailyLimit,
-                        isBanned = isBanned
-                    )
-                    saveUserLocal(updated)
-                    _currentUser.value = updated
-                }
-            }
     }
 }

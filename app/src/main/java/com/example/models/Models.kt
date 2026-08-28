@@ -17,24 +17,14 @@ data class ApiFixture(
     @Json(name = "fixture") val fixture: FixtureInfo,
     @Json(name = "league") val league: LeagueInfo,
     @Json(name = "teams") val teams: TeamsInfo,
-    @Json(name = "goals") val goals: GoalsInfo,
-    @Json(name = "score") val score: FixtureScoreInfo? = null
-)
-
-@JsonClass(generateAdapter = true)
-data class FixtureScoreInfo(
-    @Json(name = "halftime") val halftime: GoalsInfo? = null,
-    @Json(name = "fulltime") val fulltime: GoalsInfo? = null,
-    @Json(name = "extratime") val extratime: GoalsInfo? = null,
-    @Json(name = "penalty") val penalty: GoalsInfo? = null
+    @Json(name = "goals") val goals: GoalsInfo
 )
 
 @JsonClass(generateAdapter = true)
 data class FixtureInfo(
     @Json(name = "id") val id: Int,
     @Json(name = "date") val date: String,
-    @Json(name = "status") val status: StatusInfo,
-    @Json(name = "timestamp") val timestamp: Long? = null
+    @Json(name = "status") val status: StatusInfo
 )
 
 @JsonClass(generateAdapter = true)
@@ -48,10 +38,8 @@ data class LeagueInfo(
     @Json(name = "id") val id: Int,
     @Json(name = "name") val name: String,
     @Json(name = "country") val country: String,
-    @Json(name = "flag") val flag: String? = null,
-    @Json(name = "logo") val logo: String? = null,
-    @Json(name = "season") val season: Int? = null,
-    @Json(name = "round") val round: String? = null
+    @Json(name = "flag") val flag: String?,
+    @Json(name = "logo") val logo: String?
 )
 
 @JsonClass(generateAdapter = true)
@@ -101,13 +89,6 @@ data class Match(
     val homeScore: Int? = null,
     val awayScore: Int? = null,
     val matchDate: String = "",
-    val homeTeamId: Int? = null,
-    val awayTeamId: Int? = null,
-    val leagueId: Int? = null,
-    val season: Int? = null,
-    val countryName: String? = null,
-    val round: String? = null,
-    val kickoffEpoch: Long? = null,
     // When the user taps the predict button, we will store the result here
     var prediction: PredictionResult? = null
 )
@@ -117,11 +98,7 @@ data class PredictionResult(
     val confidence: Int,
     val rationale: String,
     val odds: String? = null,
-    val betType: String? = null,
-    val isModelBacked: Boolean = false,
-    val marketOdds: String? = null,
-    val edgePercent: Double? = null,
-    val dataSources: List<String> = emptyList()
+    val betType: String? = null
 )
 
 data class SearchItem(

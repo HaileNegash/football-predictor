@@ -1,10 +1,14 @@
 package com.example.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,31 +29,50 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Cached
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AddCircleOutline
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDownload
-import androidx.compose.material.icons.filled.CloudSync
-import androidx.compose.material.icons.filled.CloudUpload
-import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.RadioButtonChecked
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SportsSoccer
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material.icons.filled.Vibration
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.WorkspacePremium
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -61,6 +84,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -70,30 +94,43 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.keymanager.ApiRole
+import com.example.keymanager.KeyStatus
+import com.example.keymanager.ManagedApiKey
 import com.example.models.AccentColorMode
+import com.example.models.AiReasoningDepth
 import com.example.models.OddsFormat
+import com.example.models.RiskTolerance
 import com.example.models.ThemeMode
+import com.example.models.UserAiModel
 import com.example.models.UserTier
-import com.example.viewmodel.CloudSyncState
 import com.example.viewmodel.PredictorViewModel
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 private val CardBorderColor = Color(0xFF262A36)
 private val TextMain = Color(0xFFECEFF1)
 private val TextSub = Color(0xFF90A4AE)
 
-enum class SettingsCategory(val title: String, val icon: ImageVector) {
-    ALL("All", Icons.Filled.Settings),
-    APPEARANCE("Appearance", Icons.Filled.Palette),
-    PREFERENCES("Preferences", Icons.Filled.SportsSoccer),
-    CLOUD_DASHBOARD("Cloud & AI", Icons.Filled.CloudSync),
-    SYSTEM("System", Icons.Filled.Storage)
+enum class SettingsCategory(val title: String, val icon: ImageVector, val tag: String) {
+    AI_STRATEGY("AI Brain", Icons.Filled.Psychology, "AI & Strategy"),
+    API_VAULT("API Keys", Icons.Filled.Key, "API Keys & Vault"),
+    BETTING("Betting", Icons.Filled.SportsSoccer, "Match & Odds"),
+    APPEARANCE("Theme", Icons.Filled.Palette, "Appearance"),
+    STORAGE("Storage", Icons.Filled.Storage, "Storage & Data")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -103,14 +140,16 @@ fun SettingsScreen(
     onNavigateBack: () -> Unit,
     onNavigateToAuth: () -> Unit = {}
 ) {
+    val context = LocalContext.current
     val customSettings by viewModel.customSettings.collectAsStateWithLifecycle()
     val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
-    val cloudSyncState by viewModel.cloudSyncState.collectAsStateWithLifecycle()
-    val lastCloudSyncTimestamp by viewModel.lastCloudSyncTimestamp.collectAsStateWithLifecycle()
-    val savedSlips by viewModel.savedSlipsHistory.collectAsStateWithLifecycle()
     val keysByRole by viewModel.keyManager.keysByRole.collectAsStateWithLifecycle()
-    val keySyncStatus by viewModel.keyManager.lastSyncStatus.collectAsStateWithLifecycle()
-    val allLoadedKeys = keysByRole.values.flatten()
+    val savedSlips by viewModel.savedSlipsHistory.collectAsStateWithLifecycle()
+    val selectedBetTypes by viewModel.selectedBetTypes.collectAsStateWithLifecycle()
+    val selectedCurrency by viewModel.selectedCurrency.collectAsStateWithLifecycle()
+    val budget by viewModel.budget.collectAsStateWithLifecycle()
+    val userAddedModels by viewModel.userAddedModels.collectAsStateWithLifecycle()
+
     val activeAccent = customSettings.accentColorMode.color
     val activeBg = customSettings.themeMode.bgColor
     val activeCardBg = customSettings.themeMode.cardColor
@@ -118,20 +157,44 @@ fun SettingsScreen(
     val coroutineScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    var selectedCategory by remember { mutableStateOf(SettingsCategory.ALL) }
-    var showClearCacheDialog by remember { mutableStateOf(false) }
+    var activeCategory by remember { mutableStateOf(SettingsCategory.AI_STRATEGY) }
+    var searchQuery by remember { mutableStateOf("") }
+
+    // Dialog States
+    var showAddKeyDialog by remember { mutableStateOf(false) }
+    var editingKey by remember { mutableStateOf<ManagedApiKey?>(null) }
+    var showCustomPromptDialog by remember { mutableStateOf(false) }
+    var showExportImportDialog by remember { mutableStateOf(false) }
+    var showExportSlipsDialog by remember { mutableStateOf(false) }
+    var showResetConfirmDialog by remember { mutableStateOf(false) }
+    var isTestingKeyId by remember { mutableStateOf<String?>(null) }
+
+    fun copyToClipboard(label: String, text: String) {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = ClipData.newPlainText(label, text)
+        clipboard.setPrimaryClip(clip)
+        coroutineScope.launch {
+            snackbarHostState.showSnackbar("Copied $label to clipboard")
+        }
+    }
 
     Scaffold(
+        containerColor = activeBg,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column {
                         Text(
-                            "Settings & Config",
-                            color = TextMain,
+                            text = "Settings & Config",
+                            style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 19.sp
+                            color = TextMain
+                        )
+                        Text(
+                            text = "Local Storage • No Cloud Required",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = activeAccent
                         )
                     }
                 },
@@ -143,60 +206,60 @@ fun SettingsScreen(
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back",
-                            tint = activeAccent
+                            tint = TextMain
                         )
                     }
                 },
                 actions = {
                     IconButton(
-                        onClick = {
-                            viewModel.keyManager.triggerCloudSync()
-                            coroutineScope.launch {
-                                snackbarHostState.showSnackbar("Synchronizing settings & dashboard config...")
-                            }
-                        }
+                        onClick = { showExportImportDialog = true },
+                        modifier = Modifier.testTag("btn_settings_export_import")
                     ) {
                         Icon(
-                            imageVector = Icons.Filled.Refresh,
-                            contentDescription = "Refresh",
-                            tint = activeAccent
+                            imageVector = Icons.Filled.Share,
+                            contentDescription = "Backup Config",
+                            tint = TextSub
+                        )
+                    }
+                    IconButton(
+                        onClick = { showResetConfirmDialog = true },
+                        modifier = Modifier.testTag("btn_settings_reset_all")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.RestartAlt,
+                            contentDescription = "Reset Defaults",
+                            tint = TextSub
                         )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = activeBg,
-                    titleContentColor = TextMain
+                    containerColor = activeBg
                 )
             )
-        },
-        containerColor = activeBg,
-        modifier = Modifier.fillMaxSize()
-    ) { innerPadding ->
-        LazyColumn(
+        }
+    ) { paddingValues ->
+        Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
-                .padding(horizontal = 16.dp),
-            contentPadding = PaddingValues(top = 4.dp, bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(paddingValues)
         ) {
-            // Category Filter Pills
-            item {
+            // Category Tabs Row
+            Surface(
+                color = activeBg,
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    contentPadding = PaddingValues(vertical = 4.dp),
-                    modifier = Modifier.fillMaxWidth()
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(SettingsCategory.entries) { category ->
-                        val isSelected = selectedCategory == category
+                        val isSelected = activeCategory == category
                         Surface(
-                            onClick = { selectedCategory = category },
-                            color = if (isSelected) activeAccent else Color(0xFF1B202B),
-                            shape = RoundedCornerShape(20.dp),
-                            border = BorderStroke(
-                                1.dp,
-                                if (isSelected) activeAccent else CardBorderColor
-                            )
+                            onClick = { activeCategory = category },
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isSelected) activeAccent else activeCardBg,
+                            border = BorderStroke(1.dp, if (isSelected) activeAccent else CardBorderColor),
+                            modifier = Modifier.testTag("tab_settings_${category.name.lowercase()}")
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -205,15 +268,15 @@ fun SettingsScreen(
                                 Icon(
                                     imageVector = category.icon,
                                     contentDescription = null,
-                                    tint = if (isSelected) Color.Black else TextSub,
-                                    modifier = Modifier.size(15.dp)
+                                    tint = if (isSelected) Color.White else TextSub,
+                                    modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
                                     text = category.title,
-                                    color = if (isSelected) Color.Black else TextMain,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                    fontSize = 12.sp
+                                    color = if (isSelected) Color.White else TextMain,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
                                 )
                             }
                         }
@@ -221,175 +284,570 @@ fun SettingsScreen(
                 }
             }
 
-            // 0. Account & Identity Header Card (Always visible or in ALL)
-            if (selectedCategory == SettingsCategory.ALL || selectedCategory == SettingsCategory.SYSTEM) {
-                item {
-                    Surface(
-                        onClick = onNavigateToAuth,
-                        color = activeCardBg,
-                        shape = RoundedCornerShape(16.dp),
-                        border = BorderStroke(
-                            1.dp,
-                            if (currentUser.tier == UserTier.PRO_VIP) Color(0xFFFFD600) else CardBorderColor
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(46.dp)
-                                        .background(
-                                            if (currentUser.tier == UserTier.PRO_VIP) Color(0xFFFFD600) else activeAccent,
-                                            CircleShape
-                                        ),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = currentUser.displayName.take(1).uppercase(),
-                                        fontWeight = FontWeight.Black,
-                                        fontSize = 20.sp,
-                                        color = Color.Black
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(
-                                            text = currentUser.displayName,
-                                            color = TextMain,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 15.sp
-                                        )
-                                        if (currentUser.tier == UserTier.PRO_VIP) {
-                                            Spacer(modifier = Modifier.width(6.dp))
+            HorizontalDivider(color = CardBorderColor, thickness = 1.dp)
+
+            // Main Settings Content
+            LazyColumn(
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                when (activeCategory) {
+                    SettingsCategory.AI_STRATEGY -> {
+                        // 1. ACTIVE AI MODEL SELECTOR (Configured Models Selection)
+                        item {
+                            val keysFromVault = keysByRole.values.flatten().filter { it.status == "ACTIVE" && it.modelName.isNotBlank() }.map { key ->
+                                UserAiModel(
+                                    id = key.modelName,
+                                    name = key.modelName.split("/").last().replace("-", " ").split(" ").joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } },
+                                    provider = key.label.ifBlank { "API Vault" },
+                                    endpointUrl = key.endpointUrl,
+                                    apiKey = key.key,
+                                    badge = "Vault Key",
+                                    description = "Configured via ${key.label}"
+                                )
+                            }
+                            val allConfiguredModels = (userAddedModels + keysFromVault).distinctBy { it.id }
+                            SettingsCard(
+                                title = "AI Model Engine",
+                                subtitle = "Select configured intelligence model for match predictions",
+                                icon = Icons.Filled.Psychology,
+                                activeAccent = activeAccent,
+                                cardBg = activeCardBg
+                            ) {
+                                if (allConfiguredModels.isEmpty()) {
+                                    Surface(
+                                        color = Color(0xFF191C24),
+                                        shape = RoundedCornerShape(10.dp),
+                                        border = BorderStroke(1.dp, Color(0xFF262A36)),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(16.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        ) {
+                                            Text(
+                                                text = "No Configured AI Models",
+                                                color = TextMain,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 13.sp
+                                            )
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                text = "Add and configure your AI model in the API Keys vault tab to select it here.",
+                                                color = TextSub,
+                                                fontSize = 11.sp,
+                                                textAlign = TextAlign.Center
+                                            )
+                                        }
+                                    }
+                                } else {
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        allConfiguredModels.forEach { model ->
+                                            val isSelected = customSettings.activeAiModelId == model.id
                                             Surface(
-                                                color = Color(0xFFFFD600).copy(alpha = 0.2f),
-                                                shape = RoundedCornerShape(4.dp)
+                                                onClick = { viewModel.updateActiveAiModel(model.id) },
+                                                shape = RoundedCornerShape(10.dp),
+                                                color = if (isSelected) activeAccent.copy(alpha = 0.15f) else Color(0xFF1E222B),
+                                                border = BorderStroke(
+                                                    1.dp,
+                                                    if (isSelected) activeAccent else Color(0xFF262A36)
+                                                ),
+                                                modifier = Modifier.fillMaxWidth().testTag("ai_model_card_${model.id}")
                                             ) {
-                                                Text(
-                                                    text = "★ VIP",
-                                                    color = Color(0xFFFFD600),
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontSize = 10.sp,
-                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                                                )
+                                                Row(
+                                                    modifier = Modifier.padding(12.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Icon(
+                                                        imageVector = if (isSelected) Icons.Filled.RadioButtonChecked else Icons.Filled.RadioButtonUnchecked,
+                                                        contentDescription = if (isSelected) "Selected" else "Unselected",
+                                                        tint = if (isSelected) activeAccent else TextSub,
+                                                        modifier = Modifier.size(20.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(10.dp))
+                                                    Column(modifier = Modifier.weight(1f)) {
+                                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                                            Text(
+                                                                text = model.name,
+                                                                color = if (isSelected) activeAccent else TextMain,
+                                                                fontWeight = FontWeight.Bold,
+                                                                fontSize = 14.sp
+                                                            )
+                                                            Spacer(modifier = Modifier.width(6.dp))
+                                                            Surface(
+                                                                shape = RoundedCornerShape(4.dp),
+                                                                color = if (isSelected) activeAccent.copy(alpha = 0.3f) else Color(0xFF2A2E3D)
+                                                            ) {
+                                                                Text(
+                                                                    text = model.badge,
+                                                                    color = if (isSelected) activeAccent else TextSub,
+                                                                    fontSize = 9.sp,
+                                                                    fontWeight = FontWeight.Bold,
+                                                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                                                )
+                                                            }
+                                                            if (model.provider.isNotBlank()) {
+                                                                Spacer(modifier = Modifier.width(4.dp))
+                                                                Surface(
+                                                                    shape = RoundedCornerShape(4.dp),
+                                                                    color = Color(0xFF161920)
+                                                                ) {
+                                                                    Text(
+                                                                        text = model.provider,
+                                                                        color = TextSub,
+                                                                        fontSize = 9.sp,
+                                                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                                                    )
+                                                                }
+                                                            }
+                                                        }
+                                                        Spacer(modifier = Modifier.height(2.dp))
+                                                        Text(
+                                                            text = "ID: ${model.id}",
+                                                            color = TextSub,
+                                                            fontSize = 10.sp,
+                                                            fontFamily = FontFamily.Monospace
+                                                        )
+                                                        if (model.description.isNotBlank()) {
+                                                            Spacer(modifier = Modifier.height(2.dp))
+                                                            Text(
+                                                                text = model.description,
+                                                                color = TextSub.copy(alpha = 0.8f),
+                                                                fontSize = 10.sp,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis
+                                                            )
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     }
-                                    Text(
-                                        text = if (currentUser.email == "guest@footballpredictor.app") "Tap to sign in with Google" else currentUser.email,
-                                        color = TextSub,
-                                        fontSize = 12.sp
-                                    )
                                 }
                             }
-
-                            Surface(
-                                color = if (currentUser.tier == UserTier.PRO_VIP) Color(0xFFFFD600).copy(alpha = 0.2f) else Color(0xFF1E222B),
-                                shape = RoundedCornerShape(8.dp),
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (currentUser.tier == UserTier.PRO_VIP) Color(0xFFFFD600) else CardBorderColor
-                                )
-                            ) {
-                                Text(
-                                    text = if (currentUser.tier == UserTier.PRO_VIP) "UNLIMITED" else "${currentUser.remainingPredictions} Free Left",
-                                    color = if (currentUser.tier == UserTier.PRO_VIP) Color(0xFFFFD600) else activeAccent,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 11.sp,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                )
-                            }
                         }
-                    }
-                }
-            }
 
-            // 1. Theme & Appearance
-            if (selectedCategory == SettingsCategory.ALL || selectedCategory == SettingsCategory.APPEARANCE) {
-                item {
-                    SettingsSectionHeader(
-                        icon = Icons.Filled.Palette,
-                        title = "THEME & VISUAL STYLING",
-                        accentColor = activeAccent
-                    )
-                }
-
-                item {
-                    Surface(
-                        color = activeCardBg,
-                        shape = RoundedCornerShape(16.dp),
-                        border = BorderStroke(1.dp, CardBorderColor),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text(
-                                text = "Canvas Background Tone",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = TextMain
-                            )
-                            Text(
-                                text = "Select an eye-safe dark theme tailored for match analysis.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = TextSub
-                            )
-
-                            Spacer(modifier = Modifier.height(14.dp))
-
-                            // Theme Mode Cards
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                ThemeMode.entries.forEach { theme ->
-                                    val isSelected = customSettings.themeMode == theme
-                                    Surface(
-                                        onClick = { viewModel.updateThemeMode(theme) },
-                                        color = if (isSelected) activeAccent.copy(alpha = 0.15f) else Color(0xFF1E222B),
-                                        shape = RoundedCornerShape(12.dp),
-                                        border = BorderStroke(
-                                            1.5.dp,
-                                            if (isSelected) activeAccent else CardBorderColor
-                                        ),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(12.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween
+                        // 2. REASONING DEPTH
+                        item {
+                            SettingsCard(
+                                title = "Reasoning Depth Strategy",
+                                subtitle = "Select mathematical complexity of calculation",
+                                icon = Icons.Filled.Tune,
+                                activeAccent = activeAccent,
+                                cardBg = activeCardBg
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    AiReasoningDepth.entries.forEach { depth ->
+                                        val isSelected = customSettings.aiReasoningDepth == depth
+                                        Surface(
+                                            onClick = { viewModel.updateAiReasoningDepth(depth) },
+                                            shape = RoundedCornerShape(10.dp),
+                                            color = if (isSelected) activeAccent.copy(alpha = 0.15f) else Color(0xFF1E222B),
+                                            border = BorderStroke(1.dp, if (isSelected) activeAccent else Color(0xFF262A36)),
+                                            modifier = Modifier.fillMaxWidth()
                                         ) {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Text(theme.previewIcon, fontSize = 20.sp)
-                                                Spacer(modifier = Modifier.width(12.dp))
-                                                Column {
+                                            Row(
+                                                modifier = Modifier.padding(12.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(text = depth.iconEmoji, fontSize = 20.sp)
+                                                Spacer(modifier = Modifier.width(10.dp))
+                                                Column(modifier = Modifier.weight(1f)) {
                                                     Text(
-                                                        text = theme.title,
+                                                        text = depth.title,
                                                         color = if (isSelected) activeAccent else TextMain,
                                                         fontWeight = FontWeight.Bold,
-                                                        fontSize = 14.sp
+                                                        fontSize = 13.sp
                                                     )
                                                     Text(
-                                                        text = theme.description,
+                                                        text = depth.subtitle,
                                                         color = TextSub,
                                                         fontSize = 11.sp
                                                     )
                                                 }
+                                                if (isSelected) {
+                                                    Icon(
+                                                        imageVector = Icons.Filled.CheckCircle,
+                                                        contentDescription = null,
+                                                        tint = activeAccent,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
                                             }
+                                        }
+                                    }
+                                }
+                            }
+                        }
 
-                                            if (isSelected) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(24.dp)
-                                                        .background(activeAccent, CircleShape),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
+                        // 3. RISK TOLERANCE
+                        item {
+                            SettingsCard(
+                                title = "Risk Stance Profile",
+                                subtitle = "Balances safety probabilities vs high payout multipliers",
+                                icon = Icons.Filled.AutoAwesome,
+                                activeAccent = activeAccent,
+                                cardBg = activeCardBg
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    RiskTolerance.entries.forEach { risk ->
+                                        val isSelected = customSettings.riskTolerance == risk
+                                        Surface(
+                                            onClick = { viewModel.updateRiskTolerance(risk) },
+                                            shape = RoundedCornerShape(10.dp),
+                                            color = if (isSelected) activeAccent.copy(alpha = 0.15f) else Color(0xFF1E222B),
+                                            border = BorderStroke(1.dp, if (isSelected) activeAccent else Color(0xFF262A36)),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(12.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                                        Text(
+                                                            text = risk.title,
+                                                            color = if (isSelected) activeAccent else TextMain,
+                                                            fontWeight = FontWeight.Bold,
+                                                            fontSize = 13.sp
+                                                        )
+                                                        Spacer(modifier = Modifier.width(6.dp))
+                                                        Text(
+                                                            text = risk.badge,
+                                                            color = activeAccent,
+                                                            fontSize = 10.sp,
+                                                            fontWeight = FontWeight.SemiBold
+                                                        )
+                                                    }
+                                                    Spacer(modifier = Modifier.height(2.dp))
+                                                    Text(
+                                                        text = risk.subtitle,
+                                                        color = TextSub,
+                                                        fontSize = 11.sp
+                                                    )
+                                                }
+                                                if (isSelected) {
+                                                    Icon(
+                                                        imageVector = Icons.Filled.CheckCircle,
+                                                        contentDescription = null,
+                                                        tint = activeAccent,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 4. MIN CONFIDENCE THRESHOLD
+                        item {
+                            SettingsCard(
+                                title = "Minimum Confidence Threshold",
+                                subtitle = "Filter predictions below this certainty index",
+                                icon = Icons.Filled.Tune,
+                                activeAccent = activeAccent,
+                                cardBg = activeCardBg
+                            ) {
+                                Column {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("Certainty Floor", color = TextSub, fontSize = 12.sp)
+                                        Surface(
+                                            color = activeAccent.copy(alpha = 0.15f),
+                                            shape = RoundedCornerShape(6.dp)
+                                        ) {
+                                            Text(
+                                                text = "${customSettings.minConfidenceThreshold}%",
+                                                color = activeAccent,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 14.sp,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Slider(
+                                        value = customSettings.minConfidenceThreshold.toFloat(),
+                                        onValueChange = { viewModel.updateMinConfidence(it.toInt()) },
+                                        valueRange = 50f..95f,
+                                        steps = 44,
+                                        colors = SliderDefaults.colors(
+                                            thumbColor = activeAccent,
+                                            activeTrackColor = activeAccent,
+                                            inactiveTrackColor = Color(0xFF2E313C)
+                                        ),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text("50% (Loose)", color = TextSub, fontSize = 10.sp)
+                                        Text("75% (Balanced)", color = TextSub, fontSize = 10.sp)
+                                        Text("95% (Ironclad)", color = TextSub, fontSize = 10.sp)
+                                    }
+                                }
+                            }
+                        }
+
+                        // 5. CUSTOM TACTICAL PROMPT TUNING
+                        item {
+                            SettingsCard(
+                                title = "Tactical Prompt Directives",
+                                subtitle = "Inject custom instruction matrices for AI analysis",
+                                icon = Icons.Filled.Edit,
+                                activeAccent = activeAccent,
+                                cardBg = activeCardBg
+                            ) {
+                                Column {
+                                    if (customSettings.customTacticalPrompt.isNotBlank()) {
+                                        Surface(
+                                            color = Color(0xFF1E222B),
+                                            shape = RoundedCornerShape(8.dp),
+                                            border = BorderStroke(1.dp, Color(0xFF262A36)),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Text(
+                                                text = customSettings.customTacticalPrompt,
+                                                color = TextMain,
+                                                fontSize = 11.sp,
+                                                maxLines = 3,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.padding(10.dp)
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                    }
+                                    Button(
+                                        onClick = { showCustomPromptDialog = true },
+                                        colors = ButtonDefaults.buttonColors(containerColor = activeAccent),
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Icon(imageVector = Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            if (customSettings.customTacticalPrompt.isBlank()) "Add Custom Tactical Instructions" else "Edit Tactical Prompt",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    SettingsCategory.API_VAULT -> {
+                        // API KEYS VAULT
+                        item {
+                            SettingsCard(
+                                title = "API Vault & Data Providers",
+                                subtitle = "Add Football & AI API keys for live data & high-quota predictions",
+                                icon = Icons.Filled.Key,
+                                activeAccent = activeAccent,
+                                cardBg = activeCardBg
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Button(
+                                        onClick = {
+                                            editingKey = null
+                                            showAddKeyDialog = true
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = activeAccent),
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Icon(imageVector = Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Add New API Key", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    }
+
+                                    Spacer(modifier = Modifier.height(4.dp))
+
+                                    // Display keys grouped by role
+                                    ApiRole.entries.forEach { role ->
+                                        val keys = keysByRole[role] ?: emptyList()
+                                        RoleKeysSection(
+                                            role = role,
+                                            keys = keys,
+                                            activeAccent = activeAccent,
+                                            isTestingKeyId = isTestingKeyId,
+                                            onTestKey = { keyItem ->
+                                                isTestingKeyId = keyItem.id
+                                                viewModel.keyManager.testKeyConnection(keyItem) { success, msg ->
+                                                    isTestingKeyId = null
+                                                    coroutineScope.launch {
+                                                        snackbarHostState.showSnackbar(msg)
+                                                    }
+                                                }
+                                            },
+                                            onEditKey = { keyItem ->
+                                                editingKey = keyItem
+                                                showAddKeyDialog = true
+                                            },
+                                            onDeleteKey = { keyItem ->
+                                                viewModel.keyManager.removeKey(role, keyItem.id)
+                                                coroutineScope.launch {
+                                                    snackbarHostState.showSnackbar("Removed key (${keyItem.maskedKey})")
+                                                }
+                                            },
+                                            onResetStats = {
+                                                viewModel.keyManager.resetKeyStats(role)
+                                                coroutineScope.launch {
+                                                    snackbarHostState.showSnackbar("Reset statistics for ${role.displayName}")
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    SettingsCategory.BETTING -> {
+                        // 1. ODDS FORMAT
+                        item {
+                            SettingsCard(
+                                title = "Odds Presentation Format",
+                                subtitle = "Configure numeric representation of betting odds",
+                                icon = Icons.Filled.SportsSoccer,
+                                activeAccent = activeAccent,
+                                cardBg = activeCardBg
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OddsFormat.entries.forEach { format ->
+                                        val isSelected = customSettings.oddsFormat == format
+                                        Surface(
+                                            onClick = { viewModel.updateOddsFormat(format) },
+                                            shape = RoundedCornerShape(10.dp),
+                                            color = if (isSelected) activeAccent else Color(0xFF1E222B),
+                                            border = BorderStroke(1.dp, if (isSelected) activeAccent else Color(0xFF262A36)),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Column(
+                                                modifier = Modifier.padding(10.dp),
+                                                horizontalAlignment = Alignment.CenterHorizontally
+                                            ) {
+                                                Text(
+                                                    text = format.title,
+                                                    color = if (isSelected) Color.White else TextMain,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 12.sp
+                                                )
+                                                Text(
+                                                    text = format.example,
+                                                    color = if (isSelected) Color.White.copy(alpha = 0.8f) else TextSub,
+                                                    fontSize = 11.sp
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 2. BETTING CURRENCY & STAKE LIMITS
+                        item {
+                            SettingsCard(
+                                title = "Currency & Default Stake",
+                                subtitle = "Currency: ${selectedCurrency.name} (${selectedCurrency.symbol}) | Default Stake: ${selectedCurrency.symbol}${budget.toInt()}",
+                                icon = Icons.Filled.SportsSoccer,
+                                activeAccent = activeAccent,
+                                cardBg = activeCardBg
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Text("Select Currency", color = TextSub, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        items(viewModel.availableCurrencies) { curr ->
+                                            val isSelected = selectedCurrency.code == curr.code
+                                            Surface(
+                                                onClick = { viewModel.selectCurrency(curr) },
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = if (isSelected) activeAccent else Color(0xFF1E222B),
+                                                border = BorderStroke(1.dp, if (isSelected) activeAccent else Color(0xFF262A36))
+                                            ) {
+                                                Text(
+                                                    text = "${curr.symbol} ${curr.code}",
+                                                    color = if (isSelected) Color.White else TextMain,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 12.sp,
+                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 3. ENABLED BET TYPES
+                        item {
+                            SettingsCard(
+                                title = "Active Prediction Markets",
+                                subtitle = "${selectedBetTypes.size} of ${viewModel.availableBetTypes.size} markets active",
+                                icon = Icons.Filled.Tune,
+                                activeAccent = activeAccent,
+                                cardBg = activeCardBg
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        OutlinedButton(
+                                            onClick = { viewModel.selectAllBetTypes() },
+                                            shape = RoundedCornerShape(8.dp),
+                                            border = BorderStroke(1.dp, activeAccent),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text("Select All", color = activeAccent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                        OutlinedButton(
+                                            onClick = { viewModel.deselectAllBetTypes() },
+                                            shape = RoundedCornerShape(8.dp),
+                                            border = BorderStroke(1.dp, CardBorderColor),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text("Clear All", color = TextSub, fontSize = 11.sp)
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(4.dp))
+
+                                    viewModel.availableBetTypes.forEach { betType ->
+                                        val isChecked = selectedBetTypes.contains(betType)
+                                        Surface(
+                                            onClick = { viewModel.toggleBetType(betType) },
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = if (isChecked) activeAccent.copy(alpha = 0.12f) else Color(0xFF1E222B),
+                                            border = BorderStroke(1.dp, if (isChecked) activeAccent else Color(0xFF262A36)),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Text(
+                                                    text = betType,
+                                                    color = if (isChecked) TextMain else TextSub,
+                                                    fontSize = 12.sp,
+                                                    fontWeight = if (isChecked) FontWeight.SemiBold else FontWeight.Normal
+                                                )
+                                                if (isChecked) {
                                                     Icon(
                                                         imageVector = Icons.Filled.Check,
-                                                        contentDescription = "Selected",
-                                                        tint = Color.Black,
+                                                        contentDescription = null,
+                                                        tint = activeAccent,
                                                         modifier = Modifier.size(16.dp)
                                                     )
                                                 }
@@ -398,570 +856,97 @@ fun SettingsScreen(
                                     }
                                 }
                             }
+                        }
 
-                            Spacer(modifier = Modifier.height(16.dp))
-                            HorizontalDivider(color = CardBorderColor, thickness = 1.dp)
-                            Spacer(modifier = Modifier.height(14.dp))
-
-                            // Accent Color Palette
-                            Text(
-                                text = "Accent Highlight Color",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = TextMain
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
-
-                            LazyRow(
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                modifier = Modifier.fillMaxWidth()
+                        // 4. DISPLAY TOGGLES
+                        item {
+                            SettingsCard(
+                                title = "Match Display Filters",
+                                subtitle = "Configure match lists & refresh intervals",
+                                icon = Icons.Filled.Visibility,
+                                activeAccent = activeAccent,
+                                cardBg = activeCardBg
                             ) {
-                                items(AccentColorMode.entries) { accent ->
-                                    val isSelected = customSettings.accentColorMode == accent
-                                    Column(
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(10.dp))
-                                            .clickable { viewModel.updateAccentColor(accent) }
-                                            .padding(4.dp)
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(42.dp)
-                                                .background(accent.color, CircleShape)
-                                                .then(
-                                                    if (isSelected) Modifier.padding(2.dp) else Modifier
-                                                ),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            if (isSelected) {
-                                                Icon(
-                                                    imageVector = Icons.Filled.Check,
-                                                    contentDescription = "Selected",
-                                                    tint = Color.Black,
-                                                    modifier = Modifier.size(20.dp)
-                                                )
-                                            }
-                                        }
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        Text(
-                                            text = accent.title.substringBefore(" "),
-                                            color = if (isSelected) accent.color else TextSub,
-                                            fontSize = 10.sp,
-                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                        )
-                                    }
+                                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    SettingsToggleRow(
+                                        title = "Show Finished Matches",
+                                        subtitle = "Keep concluded fixtures visible with full-time scores",
+                                        checked = customSettings.showFinishedMatches,
+                                        onCheckedChange = { viewModel.toggleShowFinished(it) },
+                                        activeAccent = activeAccent
+                                    )
+                                    SettingsToggleRow(
+                                        title = "Compact Card Mode",
+                                        subtitle = "Fit more match rows per screen with dense layout",
+                                        checked = customSettings.compactCardMode,
+                                        onCheckedChange = { viewModel.toggleCompactMode(it) },
+                                        activeAccent = activeAccent
+                                    )
+                                    SettingsToggleRow(
+                                        title = "Haptic Tactile Feedback",
+                                        subtitle = "Subtle vibration pulse on bet selection & actions",
+                                        checked = customSettings.hapticsEnabled,
+                                        onCheckedChange = { viewModel.toggleHaptics(it) },
+                                        activeAccent = activeAccent
+                                    )
                                 }
                             }
                         }
                     }
-                }
-            }
 
-            // 2. Football & Betting Preferences
-            if (selectedCategory == SettingsCategory.ALL || selectedCategory == SettingsCategory.PREFERENCES) {
-                item {
-                    SettingsSectionHeader(
-                        icon = Icons.Filled.Tune,
-                        title = "ODDS & MATCH CONFIGURATION",
-                        accentColor = activeAccent
-                    )
-                }
-
-                item {
-                    Surface(
-                        color = activeCardBg,
-                        shape = RoundedCornerShape(16.dp),
-                        border = BorderStroke(1.dp, CardBorderColor),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text(
-                                text = "Odds Display Format",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = TextMain
-                            )
-                            Text(
-                                text = "Choose how odds multipliers are calculated and formatted.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = TextSub
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    SettingsCategory.APPEARANCE -> {
+                        // 1. THEME PALETTE
+                        item {
+                            SettingsCard(
+                                title = "Theme Matrix",
+                                subtitle = "Select dark visual canvas for optimal battery & aesthetics",
+                                icon = Icons.Filled.Palette,
+                                activeAccent = activeAccent,
+                                cardBg = activeCardBg
                             ) {
-                                OddsFormat.entries.forEach { format ->
-                                    val isSelected = customSettings.oddsFormat == format
-                                    Surface(
-                                        onClick = { viewModel.updateOddsFormat(format) },
-                                        color = if (isSelected) activeAccent else Color(0xFF1E222B),
-                                        shape = RoundedCornerShape(10.dp),
-                                        border = BorderStroke(
-                                            1.dp,
-                                            if (isSelected) activeAccent else CardBorderColor
-                                        ),
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Column(
-                                            modifier = Modifier.padding(vertical = 10.dp, horizontal = 6.dp),
-                                            horizontalAlignment = Alignment.CenterHorizontally
-                                        ) {
-                                            Text(
-                                                text = format.title.substringBefore(" "),
-                                                color = if (isSelected) Color.Black else TextMain,
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 12.sp
-                                            )
-                                            Spacer(modifier = Modifier.height(2.dp))
-                                            Text(
-                                                text = format.example,
-                                                color = if (isSelected) Color.Black.copy(alpha = 0.8f) else TextSub,
-                                                fontSize = 10.sp,
-                                                fontFamily = FontFamily.Monospace
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(16.dp))
-                            HorizontalDivider(color = CardBorderColor, thickness = 1.dp)
-                            Spacer(modifier = Modifier.height(14.dp))
-
-                            // Show Finished Matches Switch
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Surface(
-                                        color = activeAccent.copy(alpha = 0.12f),
-                                        shape = CircleShape,
-                                        modifier = Modifier.size(36.dp)
-                                    ) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Icon(
-                                                imageVector = Icons.Filled.Visibility,
-                                                contentDescription = null,
-                                                tint = activeAccent,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        }
-                                    }
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Column {
-                                        Text(
-                                            text = "Show Finished Matches",
-                                            color = TextMain,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 14.sp
-                                        )
-                                        Text(
-                                            text = "Keep completed games visible in fixture list",
-                                            color = TextSub,
-                                            fontSize = 11.sp
-                                        )
-                                    }
-                                }
-                                Switch(
-                                    checked = customSettings.showFinishedMatches,
-                                    onCheckedChange = { viewModel.toggleShowFinished(it) },
-                                    colors = SwitchDefaults.colors(
-                                        checkedThumbColor = Color.White,
-                                        checkedTrackColor = activeAccent
-                                    )
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(12.dp))
-                            HorizontalDivider(color = CardBorderColor, thickness = 1.dp)
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            // Haptic Feedback Switch
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Surface(
-                                        color = activeAccent.copy(alpha = 0.12f),
-                                        shape = CircleShape,
-                                        modifier = Modifier.size(36.dp)
-                                    ) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Icon(
-                                                imageVector = Icons.Filled.Vibration,
-                                                contentDescription = null,
-                                                tint = activeAccent,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        }
-                                    }
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Column {
-                                        Text(
-                                            text = "Tactile Haptics",
-                                            color = TextMain,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 14.sp
-                                        )
-                                        Text(
-                                            text = "Vibrate lightly when predicting and selecting matches",
-                                            color = TextSub,
-                                            fontSize = 11.sp
-                                        )
-                                    }
-                                }
-                                Switch(
-                                    checked = customSettings.hapticsEnabled,
-                                    onCheckedChange = { viewModel.toggleHaptics(it) },
-                                    colors = SwitchDefaults.colors(
-                                        checkedThumbColor = Color.White,
-                                        checkedTrackColor = activeAccent
-                                    )
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 3. Central Web Dashboard & Cloud Synchronization
-            if (selectedCategory == SettingsCategory.ALL || selectedCategory == SettingsCategory.CLOUD_DASHBOARD) {
-                item {
-                    SettingsSectionHeader(
-                        icon = Icons.Filled.CloudSync,
-                        title = "REMOTE DASHBOARD & CLOUD VAULT",
-                        accentColor = activeAccent
-                    )
-                }
-
-                item {
-                    Surface(
-                        color = activeCardBg,
-                        shape = RoundedCornerShape(16.dp),
-                        border = BorderStroke(1.dp, CardBorderColor),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            // Dashboard Status Header
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Surface(
-                                        color = Color(0xFFFF9800).copy(alpha = 0.15f),
-                                        shape = CircleShape,
-                                        modifier = Modifier.size(36.dp)
-                                    ) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Text("🌐", fontSize = 18.sp)
-                                        }
-                                    }
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Column {
-                                        Text(
-                                            text = "Dashboard Configuration",
-                                            color = TextMain,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 14.sp
-                                        )
-                                        Text(
-                                            text = "Real-time Firestore Vault Sync",
-                                            color = TextSub,
-                                            fontSize = 11.sp
-                                        )
-                                    }
-                                }
-
-                                Surface(
-                                    color = when (cloudSyncState) {
-                                        CloudSyncState.SYNCED -> Color(0xFF00E676).copy(alpha = 0.15f)
-                                        CloudSyncState.SYNCING -> activeAccent.copy(alpha = 0.15f)
-                                        else -> Color(0xFF262A36)
-                                    },
-                                    shape = RoundedCornerShape(8.dp),
-                                    border = BorderStroke(
-                                        1.dp,
-                                        when (cloudSyncState) {
-                                            CloudSyncState.SYNCED -> Color(0xFF00E676)
-                                            CloudSyncState.SYNCING -> activeAccent
-                                            else -> Color.Transparent
-                                        }
-                                    )
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        if (cloudSyncState == CloudSyncState.SYNCING) {
-                                            CircularProgressIndicator(
-                                                modifier = Modifier.size(10.dp),
-                                                color = activeAccent,
-                                                strokeWidth = 1.5.dp
-                                            )
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                        }
-                                        Text(
-                                            text = cloudSyncState.label,
-                                            color = when (cloudSyncState) {
-                                                CloudSyncState.SYNCED -> Color(0xFF00E676)
-                                                CloudSyncState.SYNCING -> activeAccent
-                                                else -> TextSub
-                                            },
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 11.sp
-                                        )
-                                    }
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Text(
-                                text = "All neural models, API providers, and active brain settings are managed strictly from your Web Dashboard. Any updates apply instantly via Firestore.",
-                                color = TextSub,
-                                fontSize = 12.sp,
-                                lineHeight = 16.sp
-                            )
-
-                            Spacer(modifier = Modifier.height(14.dp))
-
-                            // Active Dashboard Config Overview Card
-                            Surface(
-                                color = Color(0xFF141822),
-                                shape = RoundedCornerShape(12.dp),
-                                border = BorderStroke(1.dp, activeAccent.copy(alpha = 0.3f)),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(modifier = Modifier.padding(12.dp)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text(
-                                            text = "DASHBOARD ACTIVE MODEL",
-                                            color = TextSub,
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            letterSpacing = 0.5.sp
-                                        )
-                                        Surface(
-                                            color = Color(0xFF00E676).copy(alpha = 0.15f),
-                                            shape = RoundedCornerShape(4.dp)
-                                        ) {
-                                            Text(
-                                                text = "DASHBOARD CONTROLLED",
-                                                color = Color(0xFF00E676),
-                                                fontWeight = FontWeight.Black,
-                                                fontSize = 9.sp,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                    }
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text("🧠 ", fontSize = 16.sp)
-                                        Text(
-                                            text = viewModel.keyManager.activeBrainModel,
-                                            color = activeAccent,
-                                            fontWeight = FontWeight.ExtraBold,
-                                            fontSize = 14.sp
-                                        )
-                                    }
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            // Sync & Backup Action Buttons
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Button(
-                                    onClick = {
-                                        viewModel.syncDashboardAndToolsToFirestore { _, msg ->
-                                            coroutineScope.launch {
-                                                snackbarHostState.showSnackbar(msg)
-                                            }
-                                        }
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = activeAccent),
-                                    shape = RoundedCornerShape(10.dp),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .testTag("btn_sync_dashboard_to_cloud")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Filled.CloudUpload,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(15.dp),
-                                        tint = Color.Black
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Push Slips", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                }
-
-                                Button(
-                                    onClick = {
-                                        viewModel.keyManager.triggerCloudSync()
-                                        viewModel.syncFromFirebaseCloud { _, msg ->
-                                            coroutineScope.launch {
-                                                snackbarHostState.showSnackbar(msg)
-                                            }
-                                        }
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF262A36)),
-                                    shape = RoundedCornerShape(10.dp),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .testTag("btn_restore_from_cloud")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Filled.CloudDownload,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(15.dp),
-                                        tint = TextMain
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Pull Vault", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(14.dp))
-                            HorizontalDivider(color = CardBorderColor, thickness = 1.dp)
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            // Synced Keys Display List
-                            Text(
-                                text = "Synced Provider Keys (${allLoadedKeys.size})",
-                                color = TextMain,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            if (allLoadedKeys.isEmpty()) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(Color(0xFF1E222B), RoundedCornerShape(10.dp))
-                                        .padding(14.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(20.dp),
-                                            color = activeAccent,
-                                            strokeWidth = 2.dp
-                                        )
-                                        Spacer(modifier = Modifier.height(6.dp))
-                                        Text(
-                                            text = keySyncStatus ?: "Receiving dashboard configuration...",
-                                            color = TextSub,
-                                            fontSize = 11.sp
-                                        )
-                                    }
-                                }
-                            } else {
                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    allLoadedKeys.forEach { managedKey ->
-                                        val isRoleActive = managedKey.status == "ACTIVE"
-                                        val isCurrentRoleKey = viewModel.keyManager.getActiveManagedKey(managedKey.apiRole)?.id == managedKey.id
-
+                                    ThemeMode.entries.forEach { theme ->
+                                        val isSelected = customSettings.themeMode == theme
                                         Surface(
-                                            color = if (isCurrentRoleKey) activeAccent.copy(alpha = 0.08f) else Color(0xFF1E222B),
+                                            onClick = { viewModel.updateThemeMode(theme) },
                                             shape = RoundedCornerShape(10.dp),
-                                            border = BorderStroke(
-                                                1.dp,
-                                                if (isCurrentRoleKey) activeAccent.copy(alpha = 0.5f) else CardBorderColor
-                                            ),
+                                            color = if (isSelected) activeAccent.copy(alpha = 0.15f) else Color(0xFF1E222B),
+                                            border = BorderStroke(1.dp, if (isSelected) activeAccent else Color(0xFF262A36)),
                                             modifier = Modifier.fillMaxWidth()
                                         ) {
-                                            Column(modifier = Modifier.padding(12.dp)) {
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.SpaceBetween
-                                                ) {
-                                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                                        Text(managedKey.apiRole.iconEmoji, fontSize = 16.sp)
-                                                        Spacer(modifier = Modifier.width(8.dp))
-                                                        Column {
-                                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                                Text(
-                                                                    text = managedKey.label,
-                                                                    color = TextMain,
-                                                                    fontWeight = FontWeight.Bold,
-                                                                    fontSize = 13.sp
-                                                                )
-                                                                if (isCurrentRoleKey) {
-                                                                    Spacer(modifier = Modifier.width(6.dp))
-                                                                    Surface(
-                                                                        color = activeAccent,
-                                                                        shape = RoundedCornerShape(4.dp)
-                                                                    ) {
-                                                                        Text(
-                                                                            text = "ACTIVE",
-                                                                            color = Color.Black,
-                                                                            fontWeight = FontWeight.Black,
-                                                                            fontSize = 9.sp,
-                                                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                                                                        )
-                                                                    }
-                                                                }
-                                                            }
-                                                            Text(
-                                                                text = "${managedKey.role} • ${managedKey.maskedKey}",
-                                                                color = TextSub,
-                                                                fontSize = 11.sp
-                                                            )
-                                                        }
-                                                    }
-
-                                                    Surface(
-                                                        color = when {
-                                                            managedKey.isCoolingDown -> Color(0xFFFF9800).copy(alpha = 0.2f)
-                                                            isRoleActive -> Color(0xFF00E676).copy(alpha = 0.2f)
-                                                            else -> Color(0xFFFF5252).copy(alpha = 0.2f)
-                                                        },
-                                                        shape = RoundedCornerShape(6.dp)
-                                                    ) {
-                                                        Text(
-                                                            text = if (managedKey.isCoolingDown) "COOLDOWN" else managedKey.status,
-                                                            color = when {
-                                                                managedKey.isCoolingDown -> Color(0xFFFF9800)
-                                                                isRoleActive -> Color(0xFF00E676)
-                                                                else -> Color(0xFFFF5252)
-                                                            },
-                                                            fontWeight = FontWeight.Bold,
-                                                            fontSize = 10.sp,
-                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                                                        )
-                                                    }
-                                                }
-
-                                                if (managedKey.endpointUrl.isNotBlank()) {
-                                                    Spacer(modifier = Modifier.height(6.dp))
+                                            Row(
+                                                modifier = Modifier.padding(12.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(text = theme.previewIcon, fontSize = 20.sp)
+                                                Spacer(modifier = Modifier.width(10.dp))
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(24.dp)
+                                                        .clip(CircleShape)
+                                                        .background(theme.bgColor)
+                                                        .border(1.dp, Color.White.copy(alpha = 0.3f), CircleShape)
+                                                )
+                                                Spacer(modifier = Modifier.width(10.dp))
+                                                Column(modifier = Modifier.weight(1f)) {
                                                     Text(
-                                                        text = "ENDPOINT: ${managedKey.endpointUrl}",
+                                                        text = theme.title,
+                                                        color = if (isSelected) activeAccent else TextMain,
+                                                        fontWeight = FontWeight.Bold,
+                                                        fontSize = 13.sp
+                                                    )
+                                                    Text(
+                                                        text = theme.description,
                                                         color = TextSub,
-                                                        fontSize = 10.sp,
-                                                        fontFamily = FontFamily.Monospace
+                                                        fontSize = 11.sp
+                                                    )
+                                                }
+                                                if (isSelected) {
+                                                    Icon(
+                                                        imageVector = Icons.Filled.CheckCircle,
+                                                        contentDescription = null,
+                                                        tint = activeAccent,
+                                                        modifier = Modifier.size(18.dp)
                                                     )
                                                 }
                                             }
@@ -970,101 +955,1105 @@ fun SettingsScreen(
                                 }
                             }
                         }
-                    }
-                }
-            }
 
-            // 4. Storage & Diagnostics
-            if (selectedCategory == SettingsCategory.ALL || selectedCategory == SettingsCategory.SYSTEM) {
-                item {
-                    SettingsSectionHeader(
-                        icon = Icons.Filled.Storage,
-                        title = "STORAGE & SYSTEM DIAGNOSTICS",
-                        accentColor = activeAccent
-                    )
-                }
-
-                item {
-                    Surface(
-                        color = activeCardBg,
-                        shape = RoundedCornerShape(16.dp),
-                        border = BorderStroke(1.dp, CardBorderColor),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            // Clear Match Cache Row
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                        // 2. ACCENT COLOR
+                        item {
+                            SettingsCard(
+                                title = "Vibrant Accent Highlight",
+                                subtitle = "Custom glow color for buttons, badges, and active odds",
+                                icon = Icons.Filled.Palette,
+                                activeAccent = activeAccent,
+                                cardBg = activeCardBg
                             ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.weight(1f)
+                                LazyRow(
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Surface(
-                                        color = Color(0xFFFF5252).copy(alpha = 0.12f),
-                                        shape = CircleShape,
-                                        modifier = Modifier.size(36.dp)
-                                    ) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Icon(
-                                                imageVector = Icons.Filled.DeleteOutline,
-                                                contentDescription = null,
-                                                tint = Color(0xFFFF5252),
-                                                modifier = Modifier.size(18.dp)
+                                    items(AccentColorMode.entries) { accentMode ->
+                                        val isSelected = customSettings.accentColorMode == accentMode
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            modifier = Modifier.clickable { viewModel.updateAccentColor(accentMode) }
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(42.dp)
+                                                    .clip(CircleShape)
+                                                    .background(accentMode.color)
+                                                    .border(
+                                                        width = if (isSelected) 3.dp else 1.dp,
+                                                        color = if (isSelected) Color.White else Color.Transparent,
+                                                        shape = CircleShape
+                                                    ),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                if (isSelected) {
+                                                    Icon(
+                                                        imageVector = Icons.Filled.Check,
+                                                        contentDescription = null,
+                                                        tint = Color.White,
+                                                        modifier = Modifier.size(20.dp)
+                                                    )
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                text = accentMode.title.substringBefore(" "),
+                                                color = if (isSelected) Color.White else TextSub,
+                                                fontSize = 10.sp,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                                             )
                                         }
                                     }
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Column {
+                                }
+                            }
+                        }
+                    }
+
+                    SettingsCategory.STORAGE -> {
+                        // 1. LOCAL USER PROFILE & TIER
+                        item {
+                            SettingsCard(
+                                title = "User Profile & VIP Tier",
+                                subtitle = "100% on-device credentials & tier entitlements",
+                                icon = Icons.Filled.WorkspacePremium,
+                                activeAccent = activeAccent,
+                                cardBg = activeCardBg
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column {
+                                            Text(text = currentUser.displayName, color = TextMain, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                            Text(text = currentUser.email, color = TextSub, fontSize = 12.sp)
+                                        }
+                                        Surface(
+                                            color = if (currentUser.tier == UserTier.PRO_VIP) activeAccent else Color(0xFF262A36),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Text(
+                                                text = if (currentUser.tier == UserTier.PRO_VIP) "PRO VIP (UNLIMITED)" else "FREE TIER",
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 11.sp,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(4.dp))
+
+                                    Button(
+                                        onClick = {
+                                            viewModel.userManager.toggleUserTier()
+                                            coroutineScope.launch {
+                                                snackbarHostState.showSnackbar("Switched to ${if (currentUser.tier == UserTier.FREE) "PRO VIP" else "FREE"} Tier")
+                                            }
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (currentUser.tier == UserTier.PRO_VIP) Color(0xFF262A36) else activeAccent
+                                        ),
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Icon(imageVector = Icons.Filled.WorkspacePremium, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
                                         Text(
-                                            text = "Clear Match Cache",
-                                            color = TextMain,
+                                            text = if (currentUser.tier == UserTier.PRO_VIP) "Switch to Free Tier (Quota Limited)" else "⚡ 1-Tap Unlock PRO VIP (Unlimited Predictions)",
                                             fontWeight = FontWeight.Bold,
-                                            fontSize = 14.sp
-                                        )
-                                        Text(
-                                            text = "Force refresh all cached fixtures & predictions",
-                                            color = TextSub,
-                                            fontSize = 11.sp
+                                            fontSize = 12.sp
                                         )
                                     }
                                 }
-                                Button(
-                                    onClick = { showClearCacheDialog = true },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF262A36)),
+                            }
+                        }
+
+                        // 2. SAVED SLIPS EXPORT
+                        item {
+                            SettingsCard(
+                                title = "Saved Prediction Slips",
+                                subtitle = "${savedSlips.size} prediction slips stored locally in vault",
+                                icon = Icons.Filled.Storage,
+                                activeAccent = activeAccent,
+                                cardBg = activeCardBg
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Button(
+                                            onClick = { showExportSlipsDialog = true },
+                                            colors = ButtonDefaults.buttonColors(containerColor = activeAccent),
+                                            shape = RoundedCornerShape(8.dp),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(imageVector = Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Export Slips Text", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                        OutlinedButton(
+                                            onClick = {
+                                                viewModel.clearAllSlips()
+                                                coroutineScope.launch {
+                                                    snackbarHostState.showSnackbar("Cleared prediction slips history")
+                                                }
+                                            },
+                                            shape = RoundedCornerShape(8.dp),
+                                            border = BorderStroke(1.dp, Color(0xFFFF5252).copy(alpha = 0.5f)),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text("Clear Slips", color = Color(0xFFFF5252), fontSize = 11.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 3. CACHE & SYSTEM ACTIONS
+                        item {
+                            SettingsCard(
+                                title = "Vault Maintenance & Cache",
+                                subtitle = "Purge cached fixtures or perform clean factory reset",
+                                icon = Icons.Filled.RestartAlt,
+                                activeAccent = activeAccent,
+                                cardBg = activeCardBg
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = {
+                                            viewModel.clearAllMatchCache()
+                                            coroutineScope.launch {
+                                                snackbarHostState.showSnackbar("Purged fixture cache & reloaded live matches")
+                                            }
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E222B)),
+                                        border = BorderStroke(1.dp, CardBorderColor),
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Icon(imageVector = Icons.Filled.Refresh, contentDescription = null, tint = activeAccent, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Purge Fixtures Cache & Refresh", color = TextMain, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                    }
+
+                                    Button(
+                                        onClick = { showResetConfirmDialog = true },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252).copy(alpha = 0.15f)),
+                                        border = BorderStroke(1.dp, Color(0xFFFF5252).copy(alpha = 0.4f)),
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Icon(imageVector = Icons.Filled.Delete, contentDescription = null, tint = Color(0xFFFF5252), modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Factory Reset Settings to Default", color = Color(0xFFFF5252), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ==================== DIALOGS ====================
+
+    // 1. ADD / EDIT API KEY DIALOG
+    if (showAddKeyDialog) {
+        var keyInput by remember { mutableStateOf(editingKey?.key ?: "") }
+        var labelInput by remember { mutableStateOf(editingKey?.label ?: "") }
+        var selectedRole by remember { mutableStateOf(editingKey?.apiRole ?: ApiRole.API_FOOTBALL) }
+        var endpointInput by remember { mutableStateOf(editingKey?.endpointUrl ?: "https://api.openai.com/v1/") }
+        var modelNameInput by remember { mutableStateOf(editingKey?.modelName ?: "gpt-4o-mini") }
+        var isPasswordVisible by remember { mutableStateOf(false) }
+
+        // Fetch models states for OpenAI-compatible keys
+        var isFetchingKeyModels by remember { mutableStateOf(false) }
+        var fetchedKeyModels by remember { mutableStateOf<List<UserAiModel>?>(null) }
+        var fetchKeyError by remember { mutableStateOf<String?>(null) }
+        var keyModelSearchQuery by remember { mutableStateOf("") }
+        var autoRegisterInAiBrain by remember { mutableStateOf(true) }
+
+        AlertDialog(
+            onDismissRequest = { showAddKeyDialog = false },
+            containerColor = activeCardBg,
+            title = {
+                Text(
+                    text = if (editingKey == null) "Add API Key" else "Edit API Key",
+                    color = TextMain,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Service Provider", color = TextSub, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(ApiRole.entries) { role ->
+                            val isSel = selectedRole == role
+                            Surface(
+                                onClick = {
+                                    selectedRole = role
+                                    if (labelInput.isBlank() || labelInput.startsWith("My ")) {
+                                        labelInput = "${role.displayName} Key"
+                                    }
+                                    fetchKeyError = null
+                                    fetchedKeyModels = null
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSel) activeAccent else Color(0xFF1E222B),
+                                border = BorderStroke(1.dp, if (isSel) activeAccent else CardBorderColor)
+                            ) {
+                                Text(
+                                    text = "${role.iconEmoji} ${role.displayName}",
+                                    color = if (isSel) Color.White else TextMain,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = labelInput,
+                        onValueChange = { labelInput = it },
+                        label = { Text("Label / Identifier") },
+                        placeholder = { Text("e.g. Primary Key") },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = activeAccent,
+                            unfocusedBorderColor = CardBorderColor,
+                            focusedTextColor = TextMain,
+                            unfocusedTextColor = TextMain
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    OutlinedTextField(
+                        value = keyInput,
+                        onValueChange = {
+                            keyInput = it
+                            fetchKeyError = null
+                        },
+                        label = { Text("API Secret Key") },
+                        placeholder = { Text(selectedRole.headerName) },
+                        singleLine = true,
+                        visualTransformation = if (isPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { isPasswordVisible = !isPasswordVisible }) {
+                                Icon(
+                                    imageVector = if (isPasswordVisible) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
+                                    contentDescription = null,
+                                    tint = TextSub
+                                )
+                            }
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = activeAccent,
+                            unfocusedBorderColor = CardBorderColor,
+                            focusedTextColor = TextMain,
+                            unfocusedTextColor = TextMain
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    if (selectedRole == ApiRole.OPENAI_COMPATIBLE) {
+                        // Quick endpoint presets
+                        Text("Provider Preset:", color = TextSub, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            val presets = listOf(
+                                Triple("OpenRouter", "https://openrouter.ai/api/v1/", "deepseek/deepseek-r1"),
+                                Triple("OpenAI", "https://api.openai.com/v1/", "gpt-4o-mini"),
+                                Triple("DeepSeek", "https://api.deepseek.com/v1/", "deepseek-chat"),
+                                Triple("Groq", "https://api.groq.com/openai/v1/", "llama-3.3-70b-versatile"),
+                                Triple("Ollama", "http://10.0.2.2:11434/v1/", "llama3.2")
+                            )
+                            items(presets) { (presetName, url, defaultModel) ->
+                                val isSelected = endpointInput == url
+                                Surface(
+                                    onClick = {
+                                        endpointInput = url
+                                        if (modelNameInput.isBlank() || modelNameInput == "gpt-4o-mini") {
+                                            modelNameInput = defaultModel
+                                        }
+                                        fetchKeyError = null
+                                        fetchedKeyModels = null
+                                    },
                                     shape = RoundedCornerShape(8.dp),
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                    color = if (isSelected) activeAccent.copy(alpha = 0.2f) else Color(0xFF1E222B),
+                                    border = BorderStroke(1.dp, if (isSelected) activeAccent else Color(0xFF2E3446))
                                 ) {
-                                    Text("Clear", color = Color(0xFFFF5252), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    Text(
+                                        text = presetName,
+                                        color = if (isSelected) activeAccent else TextMain,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        OutlinedTextField(
+                            value = endpointInput,
+                            onValueChange = {
+                                endpointInput = it
+                                fetchKeyError = null
+                            },
+                            label = { Text("Base URL Endpoint") },
+                            placeholder = { Text("https://api.openai.com/v1/") },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = activeAccent,
+                                unfocusedBorderColor = CardBorderColor,
+                                focusedTextColor = TextMain,
+                                unfocusedTextColor = TextMain
+                            ),
+                            modifier = Modifier.fillMaxWidth().testTag("input_api_key_endpoint")
+                        )
+
+                        // FETCH MODELS BUTTON FOR OPENAI COMPATIBLE
+                        Button(
+                            onClick = {
+                                isFetchingKeyModels = true
+                                fetchKeyError = null
+                                viewModel.fetchAvailableAiModels(endpointInput.trim(), keyInput.trim()) { result ->
+                                    isFetchingKeyModels = false
+                                    if (result.isSuccess) {
+                                        val list = result.getOrNull().orEmpty()
+                                        if (list.isEmpty()) {
+                                            fetchKeyError = "Endpoint returned 0 models. Verify URL and credentials."
+                                        } else {
+                                            fetchedKeyModels = list
+                                            if (list.isNotEmpty() && (modelNameInput.isBlank() || modelNameInput == "gpt-4o-mini")) {
+                                                modelNameInput = list.first().id
+                                            }
+                                        }
+                                    } else {
+                                        fetchKeyError = result.exceptionOrNull()?.message ?: "Failed to connect to endpoint"
+                                    }
+                                }
+                            },
+                            enabled = !isFetchingKeyModels,
+                            colors = ButtonDefaults.buttonColors(containerColor = activeAccent),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth().testTag("btn_fetch_models_in_add_key")
+                        ) {
+                            if (isFetchingKeyModels) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Querying Endpoint Models...", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            } else {
+                                Icon(imageVector = Icons.Filled.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (fetchedKeyModels != null) "Re-fetch Available Models (${fetchedKeyModels!!.size} found)" else "Fetch Models from Endpoint",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        if (fetchKeyError != null) {
+                            Surface(
+                                color = Color(0xFFFF5252).copy(alpha = 0.15f),
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, Color(0xFFFF5252).copy(alpha = 0.4f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "⚠️ $fetchKeyError",
+                                    color = Color(0xFFFF8A80),
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.padding(8.dp)
+                                )
+                            }
+                        }
+
+                        // Display fetched models selector if available
+                        if (fetchedKeyModels != null) {
+                            val models = fetchedKeyModels!!
+                            val filtered = models.filter {
+                                keyModelSearchQuery.isBlank() ||
+                                it.name.contains(keyModelSearchQuery, ignoreCase = true) ||
+                                it.id.contains(keyModelSearchQuery, ignoreCase = true)
+                            }
+
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Select Model (${filtered.size}):",
+                                        color = activeAccent,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "Tap model to select",
+                                        color = TextSub,
+                                        fontSize = 10.sp
+                                    )
+                                }
+
+                                if (models.size > 5) {
+                                    OutlinedTextField(
+                                        value = keyModelSearchQuery,
+                                        onValueChange = { keyModelSearchQuery = it },
+                                        placeholder = { Text("Filter fetched models...", fontSize = 11.sp) },
+                                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = TextSub, modifier = Modifier.size(14.dp)) },
+                                        singleLine = true,
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = activeAccent,
+                                            unfocusedBorderColor = CardBorderColor,
+                                            focusedTextColor = TextMain,
+                                            unfocusedTextColor = TextMain
+                                        ),
+                                        modifier = Modifier.fillMaxWidth().height(46.dp)
+                                    )
+                                }
+
+                                Surface(
+                                    color = Color(0xFF161920),
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = BorderStroke(1.dp, Color(0xFF262A36)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(140.dp)
+                                ) {
+                                    if (filtered.isEmpty()) {
+                                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                            Text("No models matching filter", color = TextSub, fontSize = 11.sp)
+                                        }
+                                    } else {
+                                        LazyColumn(
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentPadding = PaddingValues(6.dp),
+                                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            items(filtered, key = { it.id }) { model ->
+                                                val isSelected = modelNameInput == model.id
+                                                Surface(
+                                                    onClick = {
+                                                        modelNameInput = model.id
+                                                    },
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    color = if (isSelected) activeAccent.copy(alpha = 0.2f) else Color(0xFF1E222B),
+                                                    border = BorderStroke(1.dp, if (isSelected) activeAccent else Color(0xFF2E3446)),
+                                                    modifier = Modifier.fillMaxWidth().testTag("fetched_model_item_${model.id}")
+                                                ) {
+                                                    Row(
+                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.SpaceBetween
+                                                    ) {
+                                                        Column(modifier = Modifier.weight(1f)) {
+                                                            Text(
+                                                                text = model.name,
+                                                                color = if (isSelected) activeAccent else TextMain,
+                                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                                                fontSize = 11.sp,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis
+                                                            )
+                                                            Text(
+                                                                text = model.id,
+                                                                color = TextSub,
+                                                                fontSize = 9.sp,
+                                                                fontFamily = FontFamily.Monospace,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis
+                                                            )
+                                                        }
+                                                        if (isSelected) {
+                                                            Icon(
+                                                                imageVector = Icons.Filled.Check,
+                                                                contentDescription = "Selected",
+                                                                tint = activeAccent,
+                                                                modifier = Modifier.size(16.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        OutlinedTextField(
+                            value = modelNameInput,
+                            onValueChange = { modelNameInput = it },
+                            label = { Text("Model Identifier") },
+                            placeholder = { Text("gpt-4o-mini / deepseek-r1") },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = activeAccent,
+                                unfocusedBorderColor = CardBorderColor,
+                                focusedTextColor = TextMain,
+                                unfocusedTextColor = TextMain
+                            ),
+                            modifier = Modifier.fillMaxWidth().testTag("input_api_key_model_name")
+                        )
+
+                        // Auto register checkbox
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { autoRegisterInAiBrain = !autoRegisterInAiBrain }
+                                .padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = autoRegisterInAiBrain,
+                                onCheckedChange = { autoRegisterInAiBrain = it },
+                                colors = CheckboxDefaults.colors(
+                                    checkedColor = activeAccent,
+                                    uncheckedColor = TextSub,
+                                    checkmarkColor = Color.White
+                                ),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Register this model into AI Brain Engine",
+                                color = TextMain,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (keyInput.isNotBlank()) {
+                            val newKey = ManagedApiKey(
+                                id = editingKey?.id ?: java.util.UUID.randomUUID().toString(),
+                                role = selectedRole.code,
+                                key = keyInput.trim(),
+                                label = labelInput.ifBlank { "${selectedRole.displayName} Key" },
+                                endpointUrl = endpointInput.trim(),
+                                modelName = modelNameInput.trim(),
+                                status = KeyStatus.ACTIVE.name
+                            )
+                            viewModel.keyManager.addOrUpdateKey(newKey)
+
+                            // Also register in AI Brain models list if requested
+                            if (selectedRole == ApiRole.OPENAI_COMPATIBLE && autoRegisterInAiBrain && modelNameInput.isNotBlank()) {
+                                val matchedModel = fetchedKeyModels?.find { it.id == modelNameInput.trim() }
+                                val modelToAdd = matchedModel?.copy(
+                                    endpointUrl = endpointInput.trim(),
+                                    apiKey = keyInput.trim()
+                                ) ?: UserAiModel(
+                                    id = modelNameInput.trim(),
+                                    name = modelNameInput.trim().split("/").last().replace("-", " ").split(" ").joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } },
+                                    provider = "OpenAI Compatible",
+                                    endpointUrl = endpointInput.trim(),
+                                    apiKey = keyInput.trim(),
+                                    badge = "Vault API",
+                                    description = "Added via API Vault (${labelInput.ifBlank { "OpenAI Compatible" }})"
+                                )
+                                viewModel.addUserModel(modelToAdd)
+                            }
+
+                            showAddKeyDialog = false
+                            coroutineScope.launch {
+                                snackbarHostState.showSnackbar("Saved key for ${selectedRole.displayName}")
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = activeAccent)
+                ) {
+                    Text("Save to Vault", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddKeyDialog = false }) {
+                    Text("Cancel", color = TextSub)
+                }
+            }
+        )
+    }
+
+    // 2. CUSTOM TACTICAL PROMPT DIALOG
+    if (showCustomPromptDialog) {
+        var promptText by remember { mutableStateOf(customSettings.customTacticalPrompt) }
+
+        AlertDialog(
+            onDismissRequest = { showCustomPromptDialog = false },
+            containerColor = activeCardBg,
+            title = {
+                Text("Custom Tactical AI Directives", color = TextMain, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Provide specialized guidelines for the AI predictor (e.g., 'Focus heavily on defensive suspensions and expected corner averages').",
+                        color = TextSub,
+                        fontSize = 12.sp
+                    )
+                    OutlinedTextField(
+                        value = promptText,
+                        onValueChange = { promptText = it },
+                        placeholder = { Text("Enter tactical instructions...") },
+                        maxLines = 6,
+                        minLines = 4,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = activeAccent,
+                            unfocusedBorderColor = CardBorderColor,
+                            focusedTextColor = TextMain,
+                            unfocusedTextColor = TextMain
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.updateCustomTacticalPrompt(promptText.trim())
+                        showCustomPromptDialog = false
+                        coroutineScope.launch {
+                            snackbarHostState.showSnackbar("Updated tactical instructions")
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = activeAccent)
+                ) {
+                    Text("Apply Prompt", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCustomPromptDialog = false }) {
+                    Text("Cancel", color = TextSub)
+                }
+            }
+        )
+    }
+
+    // 3. EXPORT / IMPORT SETTINGS DIALOG
+    if (showExportImportDialog) {
+        var jsonText by remember { mutableStateOf(viewModel.exportSettingsJson()) }
+        var importError by remember { mutableStateOf<String?>(null) }
+
+        AlertDialog(
+            onDismissRequest = { showExportImportDialog = false },
+            containerColor = activeCardBg,
+            title = {
+                Text("Backup & Restore Config", color = TextMain, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Export your configuration or paste an existing backup JSON string below.",
+                        color = TextSub,
+                        fontSize = 12.sp
+                    )
+                    OutlinedTextField(
+                        value = jsonText,
+                        onValueChange = {
+                            jsonText = it
+                            importError = null
+                        },
+                        maxLines = 8,
+                        minLines = 5,
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = activeAccent,
+                            unfocusedBorderColor = CardBorderColor,
+                            focusedTextColor = TextMain,
+                            unfocusedTextColor = TextMain
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (importError != null) {
+                        Text(text = importError!!, color = Color(0xFFFF5252), fontSize = 11.sp)
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { copyToClipboard("App Config JSON", jsonText) },
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, activeAccent),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(imageVector = Icons.Filled.ContentCopy, contentDescription = null, tint = activeAccent, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Copy JSON", color = activeAccent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val success = viewModel.importSettingsJson(jsonText)
+                        if (success) {
+                            showExportImportDialog = false
+                            coroutineScope.launch {
+                                snackbarHostState.showSnackbar("Configuration imported successfully!")
+                            }
+                        } else {
+                            importError = "Invalid JSON format. Please verify syntax."
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = activeAccent)
+                ) {
+                    Text("Import & Apply", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExportImportDialog = false }) {
+                    Text("Close", color = TextSub)
+                }
+            }
+        )
+    }
+
+    // 4. EXPORT SLIPS DIALOG
+    if (showExportSlipsDialog) {
+        val slipReport = remember { viewModel.exportSlipsAsFormattedText() }
+
+        AlertDialog(
+            onDismissRequest = { showExportSlipsDialog = false },
+            containerColor = activeCardBg,
+            title = {
+                Text("Exported Bet Slips", color = TextMain, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Formatted summary of all saved bet predictions:",
+                        color = TextSub,
+                        fontSize = 12.sp
+                    )
+                    Surface(
+                        color = Color(0xFF161920),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, CardBorderColor),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(200.dp)
+                    ) {
+                        LazyColumn(modifier = Modifier.padding(10.dp)) {
+                            item {
+                                Text(
+                                    text = slipReport,
+                                    color = TextMain,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        copyToClipboard("Saved Slips Report", slipReport)
+                        showExportSlipsDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = activeAccent)
+                ) {
+                    Icon(imageVector = Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Copy to Clipboard", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExportSlipsDialog = false }) {
+                    Text("Close", color = TextSub)
+                }
+            }
+        )
+    }
+
+    // 5. RESET CONFIRM DIALOG
+    if (showResetConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showResetConfirmDialog = false },
+            containerColor = activeCardBg,
+            title = {
+                Text("Reset All Settings?", color = TextMain, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Text(
+                    "This will restore default appearance, AI reasoning depth, odds format, stake presets, and active bet markets to factory defaults.",
+                    color = TextSub,
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.resetAllSettingsToDefault()
+                        showResetConfirmDialog = false
+                        coroutineScope.launch {
+                            snackbarHostState.showSnackbar("All settings restored to defaults")
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252))
+                ) {
+                    Text("Reset Defaults", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetConfirmDialog = false }) {
+                    Text("Cancel", color = TextSub)
+                }
+            }
+        )
+    }
+
+
+}
+
+// ==================== SUBCOMPONENTS ====================
+
+@Composable
+private fun SettingsCard(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    activeAccent: Color,
+    cardBg: Color,
+    action: (@Composable () -> Unit)? = null,
+    content: @Composable () -> Unit
+) {
+    Surface(
+        color = cardBg,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, CardBorderColor),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = activeAccent.copy(alpha = 0.15f),
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = null,
+                            tint = activeAccent,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title,
+                        color = TextMain,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = subtitle,
+                        color = TextSub,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                if (action != null) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    action()
+                }
+            }
+            Spacer(modifier = Modifier.height(14.dp))
+            content()
+        }
+    }
+}
+
+
+
+@Composable
+private fun SettingsToggleRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    activeAccent: Color
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = title, color = TextMain, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+            Text(text = subtitle, color = TextSub, fontSize = 11.sp)
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = activeAccent,
+                uncheckedThumbColor = TextSub,
+                uncheckedTrackColor = Color(0xFF262A36)
+            )
+        )
+    }
+}
+
+@Composable
+private fun RoleKeysSection(
+    role: ApiRole,
+    keys: List<ManagedApiKey>,
+    activeAccent: Color,
+    isTestingKeyId: String?,
+    onTestKey: (ManagedApiKey) -> Unit,
+    onEditKey: (ManagedApiKey) -> Unit,
+    onDeleteKey: (ManagedApiKey) -> Unit,
+    onResetStats: () -> Unit
+) {
+    Surface(
+        color = Color(0xFF1E222B),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, CardBorderColor),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(text = role.iconEmoji, fontSize = 16.sp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = role.displayName,
+                        color = TextMain,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
+                    )
+                }
+                Surface(
+                    color = if (keys.isNotEmpty()) activeAccent.copy(alpha = 0.15f) else Color(0xFF262A36),
+                    shape = RoundedCornerShape(6.dp)
+                ) {
+                    Text(
+                        text = "${keys.size} stored",
+                        color = if (keys.isNotEmpty()) activeAccent else TextSub,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(text = role.subtitle, color = TextSub, fontSize = 10.sp)
+
+            if (keys.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                keys.forEach { keyItem ->
+                    val isTesting = isTestingKeyId == keyItem.id
+                    Surface(
+                        color = Color(0xFF161920),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, Color(0xFF262A36)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 3.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = keyItem.label,
+                                        color = TextMain,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = keyItem.maskedKey,
+                                        color = TextSub,
+                                        fontSize = 10.sp,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+                                if (keyItem.lastTestMessage != null) {
+                                    Text(
+                                        text = keyItem.lastTestMessage,
+                                        color = if (keyItem.lastTestStatus == "ACTIVE") Color(0xFF00E676) else Color(0xFFFF5252),
+                                        fontSize = 9.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                 }
                             }
 
-                            Spacer(modifier = Modifier.height(12.dp))
-                            HorizontalDivider(color = CardBorderColor, thickness = 1.dp)
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            // App Version & Diagnostics Info
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column {
-                                    Text("App Version", color = TextSub, fontSize = 11.sp)
-                                    Text("2.5.0 (Note 3 / Android 5.0+ Cloud Ready)", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (isTesting) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), color = activeAccent, strokeWidth = 2.dp)
+                                } else {
+                                    IconButton(
+                                        onClick = { onTestKey(keyItem) },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Refresh,
+                                            contentDescription = "Test",
+                                            tint = activeAccent,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
                                 }
-                                Surface(
-                                    color = activeAccent.copy(alpha = 0.15f),
-                                    shape = RoundedCornerShape(6.dp)
+                                IconButton(
+                                    onClick = { onEditKey(keyItem) },
+                                    modifier = Modifier.size(28.dp)
                                 ) {
-                                    Text(
-                                        text = "STABLE",
-                                        color = activeAccent,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 10.sp,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    Icon(
+                                        imageVector = Icons.Filled.Edit,
+                                        contentDescription = "Edit",
+                                        tint = TextSub,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { onDeleteKey(keyItem) },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Delete,
+                                        contentDescription = "Delete",
+                                        tint = Color(0xFFFF5252).copy(alpha = 0.8f),
+                                        modifier = Modifier.size(14.dp)
                                     )
                                 }
                             }
@@ -1072,72 +2061,6 @@ fun SettingsScreen(
                     }
                 }
             }
-
-            item {
-                Spacer(modifier = Modifier.height(16.dp))
-            }
         }
-    }
-
-    if (showClearCacheDialog) {
-        AlertDialog(
-            onDismissRequest = { showClearCacheDialog = false },
-            containerColor = activeCardBg,
-            title = {
-                Text("Clear Match Cache?", color = TextMain, fontWeight = FontWeight.Bold)
-            },
-            text = {
-                Text(
-                    "This will wipe locally cached football matches and fetch the latest live data from configured providers.",
-                    color = TextSub
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        viewModel.clearAllMatchCache()
-                        showClearCacheDialog = false
-                        coroutineScope.launch {
-                            snackbarHostState.showSnackbar("Match cache cleared. Fresh data loaded.")
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252))
-                ) {
-                    Text("Clear Cache", color = Color.White, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showClearCacheDialog = false }) {
-                    Text("Cancel", color = TextSub)
-                }
-            }
-        )
-    }
-}
-
-@Composable
-fun SettingsSectionHeader(
-    icon: ImageVector,
-    title: String,
-    accentColor: Color
-) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = accentColor,
-            modifier = Modifier.size(16.dp)
-        )
-        Spacer(modifier = Modifier.width(6.dp))
-        Text(
-            text = title,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Bold,
-            color = accentColor,
-            letterSpacing = 1.sp
-        )
     }
 }

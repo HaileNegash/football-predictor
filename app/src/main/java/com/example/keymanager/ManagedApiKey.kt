@@ -41,8 +41,4 @@ data class ManagedApiKey(
             key.isNotBlank() -> "••••••••"
             else -> "No key"
         }
-
-    /** Bearer header value, tolerating keys that already carry the prefix. */
-    val authHeaderValue: String
-        get() = if (key.startsWith("Bearer ", ignoreCase = true)) key else "Bearer ${key.trim()}"
 }

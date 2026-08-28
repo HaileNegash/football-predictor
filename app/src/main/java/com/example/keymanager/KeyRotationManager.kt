@@ -13,20 +13,27 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.util.concurrent.TimeUnit
 
 class KeyRotationManager(
     private val context: Context,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO)
 ) {
     private val tag = "KeyRotationManager"
-    private val prefs: SharedPreferences = context.getSharedPreferences("api_key_vault", Context.MODE_PRIVATE)
-    private val firebaseService = FirebaseKeyService(context.applicationContext)
+    private val prefs: SharedPreferences = context.getSharedPreferences("api_key_vault_local", Context.MODE_PRIVATE)
 
     private val moshi: Moshi = Moshi.Builder()
         .add(KotlinJsonAdapterFactory())
         .build()
     private val listType = Types.newParameterizedType(List::class.java, ManagedApiKey::class.java)
     private val adapter = moshi.adapter<List<ManagedApiKey>>(listType)
+
+    private val httpClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(8, TimeUnit.SECONDS)
+        .build()
 
     // Keys mapped by role
     private val _keysByRole = MutableStateFlow<Map<ApiRole, List<ManagedApiKey>>>(emptyMap())
@@ -36,33 +43,27 @@ class KeyRotationManager(
     private val _activeIndices = MutableStateFlow<Map<ApiRole, Int>>(emptyMap())
     val activeIndices: StateFlow<Map<ApiRole, Int>> = _activeIndices.asStateFlow()
 
-    private val _isCloudSyncing = MutableStateFlow(false)
-    val isCloudSyncing: StateFlow<Boolean> = _isCloudSyncing.asStateFlow()
+    private val _activeBrainModel = MutableStateFlow(prefs.getString("active_ai_brain_model", "gemini-2.5-flash") ?: "gemini-2.5-flash")
+    val activeBrainModelFlow: StateFlow<String> = _activeBrainModel.asStateFlow()
 
-    private val _lastSyncStatus = MutableStateFlow<String?>("Connecting to Cloud...")
+    val activeBrainModel: String
+        get() = _activeBrainModel.value
+
+    private val _lastSyncStatus = MutableStateFlow<String?>("Local Vault Active (On-Device Storage)")
     val lastSyncStatus: StateFlow<String?> = _lastSyncStatus.asStateFlow()
 
     init {
         loadKeysFromLocal()
-        observeCloudUpdates()
-        // Immediate cloud fetch on start
-        if (firebaseService.isFirebaseAvailable) {
-            scope.launch {
-                val result = firebaseService.fetchAllKeys()
-                if (result.isSuccess) {
-                    val keys = result.getOrNull() ?: emptyList()
-                    if (keys.isNotEmpty()) {
-                        mergeCloudKeys(keys)
-                        _lastSyncStatus.value = "Cloud Active (${keys.size} keys)"
-                    }
-                }
-            }
-        }
+    }
+
+    fun setActiveBrainModel(modelName: String) {
+        _activeBrainModel.value = modelName
+        prefs.edit().putString("active_ai_brain_model", modelName).apply()
     }
 
     private fun loadKeysFromLocal() {
         val loadedMap = mutableMapOf<ApiRole, List<ManagedApiKey>>()
-        
+
         ApiRole.entries.forEach { role ->
             val json = prefs.getString("keys_${role.code}", null)
             val keys = if (json != null) {
@@ -78,7 +79,7 @@ class KeyRotationManager(
             loadedMap[role] = keys
         }
 
-        // Check if legacy key or default BuildConfig key should be migrated
+        // Check if legacy key or BuildConfig key should be seeded
         val legacyKey = context.getSharedPreferences("predictor_prefs", Context.MODE_PRIVATE)
             .getString("api_football_key", null)
             ?.takeIf { it.isNotBlank() && it != "87d20a4f0d5684ae37e1e8497be4e3b7" }
@@ -119,44 +120,6 @@ class KeyRotationManager(
         }
     }
 
-    private fun observeCloudUpdates() {
-        if (!firebaseService.isFirebaseAvailable) {
-            _lastSyncStatus.value = "Local Cache (Firebase offline/unconfigured)"
-            return
-        }
-
-        scope.launch {
-            try {
-                firebaseService.observeKeys().collect { cloudKeys ->
-                    if (cloudKeys.isNotEmpty()) {
-                        mergeCloudKeys(cloudKeys)
-                        _lastSyncStatus.value = "Cloud Active (${cloudKeys.size} keys)"
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(tag, "Cloud observe error: ${e.message}")
-            }
-        }
-    }
-
-    private fun mergeCloudKeys(cloudKeys: List<ManagedApiKey>) {
-        val currentMap = _keysByRole.value.toMutableMap()
-        var hasChanges = false
-
-        ApiRole.entries.forEach { role ->
-            val roleCloudKeys = cloudKeys.filter { it.apiRole == role }
-            if (roleCloudKeys.isNotEmpty()) {
-                currentMap[role] = roleCloudKeys
-                saveKeysToLocal(role, roleCloudKeys)
-                hasChanges = true
-            }
-        }
-
-        if (hasChanges) {
-            _keysByRole.value = currentMap
-        }
-    }
-
     /**
      * Gets the active key for a given role, performing health check and automatic cooldown recovery.
      */
@@ -171,7 +134,6 @@ class KeyRotationManager(
         }
 
         if (healthyKeys.isEmpty()) {
-            // All keys in cooldown or error; return first key anyway or null
             return keys.firstOrNull()?.key
         }
 
@@ -180,16 +142,13 @@ class KeyRotationManager(
         return healthyKeys.getOrNull(safeIndex)?.key ?: healthyKeys.first().key
     }
 
-    val activeBrainModel: String
-        get() = firebaseService.activeBrainModel ?: "qwen-3.8-max-free"
-
     /**
      * Returns the full managed key object currently active.
      */
     fun getActiveManagedKey(role: ApiRole): ManagedApiKey? {
         val activeKeyString = getActiveKey(role) ?: return null
         val found = _keysByRole.value[role]?.find { it.key == activeKeyString }
-        val model = firebaseService.activeBrainModel ?: "qwen-3.8-max-free"
+        val model = _activeBrainModel.value
         return if (found != null && role == ApiRole.OPENAI_COMPATIBLE) {
             found.copy(modelName = model)
         } else {
@@ -198,7 +157,7 @@ class KeyRotationManager(
     }
 
     /**
-     * Rotates to the next available healthy key for a role.
+     * Rotates to the next available key for a role.
      */
     fun rotateNext(role: ApiRole): ManagedApiKey? {
         val keys = _keysByRole.value[role] ?: emptyList()
@@ -219,10 +178,10 @@ class KeyRotationManager(
     /**
      * Adds or updates a key for a given role.
      */
-    fun addOrUpdateKey(apiKey: ManagedApiKey, syncToCloud: Boolean = true) {
+    fun addOrUpdateKey(apiKey: ManagedApiKey) {
         val role = apiKey.apiRole
         val currentKeys = (_keysByRole.value[role] ?: emptyList()).toMutableList()
-        val existingIndex = currentKeys.indexOfFirst { it.id == apiKey.id || it.key.trim() == apiKey.key.trim() }
+        val existingIndex = currentKeys.indexOfFirst { it.id == apiKey.id || (it.key.trim().isNotEmpty() && it.key.trim() == apiKey.key.trim()) }
 
         if (existingIndex >= 0) {
             currentKeys[existingIndex] = apiKey
@@ -234,18 +193,13 @@ class KeyRotationManager(
         updatedMap[role] = currentKeys
         _keysByRole.value = updatedMap
         saveKeysToLocal(role, currentKeys)
-
-        if (syncToCloud && firebaseService.isFirebaseAvailable) {
-            scope.launch {
-                firebaseService.saveKey(apiKey)
-            }
-        }
+        _lastSyncStatus.value = "Updated ${role.displayName} (${currentKeys.size} stored)"
     }
 
     /**
      * Removes a key by ID.
      */
-    fun removeKey(role: ApiRole, keyId: String, syncToCloud: Boolean = true) {
+    fun removeKey(role: ApiRole, keyId: String) {
         val currentKeys = (_keysByRole.value[role] ?: emptyList()).toMutableList()
         currentKeys.removeAll { it.id == keyId }
 
@@ -254,19 +208,12 @@ class KeyRotationManager(
         _keysByRole.value = updatedMap
         saveKeysToLocal(role, currentKeys)
 
-        // Adjust index if out of bounds
         val currentIdx = _activeIndices.value[role] ?: 0
         if (currentIdx >= currentKeys.size && currentKeys.isNotEmpty()) {
             val updatedIndices = _activeIndices.value.toMutableMap()
             updatedIndices[role] = 0
             _activeIndices.value = updatedIndices
             prefs.edit().putInt("active_idx_${role.code}", 0).apply()
-        }
-
-        if (syncToCloud && firebaseService.isFirebaseAvailable) {
-            scope.launch {
-                firebaseService.deleteKey(keyId)
-            }
         }
     }
 
@@ -293,8 +240,7 @@ class KeyRotationManager(
     }
 
     /**
-     * Reports that a key received rate-limit (HTTP 429) or quota exceeded.
-     * Places the key on cooldown and automatically rotates to the next available healthy key.
+     * Reports that a key received rate-limit (HTTP 429).
      */
     fun reportKeyRateLimited(role: ApiRole, key: String, cooldownSeconds: Long = 300) {
         val currentKeys = (_keysByRole.value[role] ?: emptyList()).toMutableList()
@@ -346,69 +292,132 @@ class KeyRotationManager(
     }
 
     /**
-     * Updates the active AI model name (e.g. "qwen-3.8-max-free") for a role.
+     * Resets statistics for all keys in a role.
      */
-    fun setSelectedModel(role: ApiRole, modelName: String) {
-        val currentKeys = (_keysByRole.value[role] ?: emptyList()).toMutableList()
-        if (currentKeys.isEmpty()) return
-
-        val currentIndex = _activeIndices.value[role] ?: 0
-        val safeIndex = currentIndex % currentKeys.size
-        val currentKey = currentKeys[safeIndex]
-
-        val updated = currentKey.copy(modelName = modelName)
-        currentKeys[safeIndex] = updated
-
+    fun resetKeyStats(role: ApiRole) {
+        val currentKeys = (_keysByRole.value[role] ?: emptyList()).map {
+            it.copy(
+                status = KeyStatus.ACTIVE.name,
+                usageCount = 0,
+                errorCount = 0,
+                rateLimitedUntil = 0L,
+                lastTestMessage = null,
+                lastTestStatus = null
+            )
+        }
         val updatedMap = _keysByRole.value.toMutableMap()
         updatedMap[role] = currentKeys
         _keysByRole.value = updatedMap
         saveKeysToLocal(role, currentKeys)
-
-        if (firebaseService.isFirebaseAvailable) {
-            scope.launch {
-                firebaseService.saveKey(updated)
-            }
-        }
     }
 
     /**
-     * Manual sync action with Firebase Firestore.
+     * Performs a fast connectivity diagnostics check for an API key.
      */
-    fun triggerCloudSync(onResult: (Boolean, String) -> Unit = { _, _ -> }) {
-        if (!firebaseService.isFirebaseAvailable) {
-            onResult(false, "Firebase is not configured or unavailable")
-            return
-        }
-
+    fun testKeyConnection(apiKey: ManagedApiKey, onResult: (Boolean, String) -> Unit) {
         scope.launch {
-            _isCloudSyncing.value = true
-            _lastSyncStatus.value = "Syncing with Firebase Firestore..."
+            val role = apiKey.apiRole
+            val keyVal = apiKey.key.trim()
+            if (keyVal.isBlank()) {
+                onResult(false, "API Key is empty")
+                return@launch
+            }
+
+            var success = false
+            var message = ""
 
             try {
-                // 1. Upload local keys to Cloud
-                val allLocalKeys = _keysByRole.value.values.flatten()
-                allLocalKeys.forEach { key ->
-                    firebaseService.saveKey(key)
-                }
-
-                // 2. Fetch all cloud keys
-                val cloudResult = firebaseService.fetchAllKeys()
-                if (cloudResult.isSuccess) {
-                    val cloudKeys = cloudResult.getOrNull() ?: emptyList()
-                    mergeCloudKeys(cloudKeys)
-                    _lastSyncStatus.value = "Synced: ${cloudKeys.size} Cloud Keys Active"
-                    onResult(true, "Successfully synced with Firebase Firestore (${cloudKeys.size} keys)")
-                } else {
-                    val errorMsg = cloudResult.exceptionOrNull()?.message ?: "Unknown error"
-                    _lastSyncStatus.value = "Sync failed: $errorMsg"
-                    onResult(false, "Sync failed: $errorMsg")
+                when (role) {
+                    ApiRole.FOOTBALL_DATA_ORG -> {
+                        val req = Request.Builder()
+                            .url("https://api.football-data.org/v4/competitions/PL")
+                            .header("X-Auth-Token", keyVal)
+                            .get()
+                            .build()
+                        val res = httpClient.newCall(req).execute()
+                        if (res.isSuccessful) {
+                            success = true
+                            message = "Connected to Football-Data.org (HTTP ${res.code})"
+                        } else {
+                            message = "HTTP ${res.code}: ${res.message}"
+                        }
+                    }
+                    ApiRole.API_FOOTBALL -> {
+                        val req = Request.Builder()
+                            .url("https://v3.football.api-sports.io/status")
+                            .header("x-apisports-key", keyVal)
+                            .get()
+                            .build()
+                        val res = httpClient.newCall(req).execute()
+                        if (res.isSuccessful) {
+                            success = true
+                            message = "Connected to API-Football (HTTP ${res.code})"
+                        } else {
+                            message = "HTTP ${res.code}: ${res.message}"
+                        }
+                    }
+                    ApiRole.THE_ODDS_API -> {
+                        val req = Request.Builder()
+                            .url("https://api.the-odds-api.com/v4/sports?apiKey=$keyVal")
+                            .get()
+                            .build()
+                        val res = httpClient.newCall(req).execute()
+                        if (res.isSuccessful) {
+                            success = true
+                            message = "Connected to The Odds API (HTTP ${res.code})"
+                        } else {
+                            message = "HTTP ${res.code}: ${res.message}"
+                        }
+                    }
+                    ApiRole.OPENAI_COMPATIBLE -> {
+                        val baseUrl = apiKey.endpointUrl.trim().removeSuffix("/")
+                        val endpoint = if (baseUrl.endsWith("/models")) baseUrl else "$baseUrl/models"
+                        val req = Request.Builder()
+                            .url(endpoint)
+                            .header("Authorization", "Bearer $keyVal")
+                            .get()
+                            .build()
+                        val res = httpClient.newCall(req).execute()
+                        if (res.isSuccessful) {
+                            success = true
+                            message = "Connected to AI Model Endpoint (HTTP ${res.code})"
+                        } else {
+                            message = "HTTP ${res.code}: ${res.message}"
+                        }
+                    }
+                    ApiRole.GEMINI -> {
+                        val req = Request.Builder()
+                            .url("https://generativelanguage.googleapis.com/v1beta/models?key=$keyVal")
+                            .get()
+                            .build()
+                        val res = httpClient.newCall(req).execute()
+                        if (res.isSuccessful) {
+                            success = true
+                            message = "Connected to Gemini API (HTTP ${res.code})"
+                        } else {
+                            message = "HTTP ${res.code}: ${res.message}"
+                        }
+                    }
+                    else -> {
+                        success = true
+                        message = "Key format valid (${apiKey.maskedKey})"
+                    }
                 }
             } catch (e: Exception) {
-                _lastSyncStatus.value = "Sync error: ${e.message}"
-                onResult(false, "Sync error: ${e.message}")
-            } finally {
-                _isCloudSyncing.value = false
+                success = false
+                message = "Connection error: ${e.localizedMessage ?: e.message}"
             }
+
+            // Update key testing status
+            val updated = apiKey.copy(
+                lastTestedAt = System.currentTimeMillis(),
+                lastTestStatus = if (success) "ACTIVE" else "ERROR",
+                lastTestMessage = message,
+                status = if (success) KeyStatus.ACTIVE.name else apiKey.status
+            )
+            addOrUpdateKey(updated)
+
+            onResult(success, message)
         }
     }
 }

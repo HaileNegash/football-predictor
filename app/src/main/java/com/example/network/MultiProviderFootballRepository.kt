@@ -78,14 +78,7 @@ class MultiProviderFootballRepository(
                                             status = apiFixture.fixture.status.short,
                                             homeScore = apiFixture.goals.home,
                                             awayScore = apiFixture.goals.away,
-                                            matchDate = matchDateStr,
-                                            homeTeamId = apiFixture.teams.home.id,
-                                            awayTeamId = apiFixture.teams.away.id,
-                                            leagueId = leagueInfo.id,
-                                            season = leagueInfo.season,
-                                            countryName = countryName,
-                                            round = leagueInfo.round,
-                                            kickoffEpoch = apiFixture.fixture.timestamp
+                                            matchDate = matchDateStr
                                         )
                                     }.sortedBy { it.startTime }
 
