@@ -802,6 +802,41 @@ fun SettingsScreen(
                                         )
                                     }
 
+                                    // Firebase Connection Details Information Card
+                                    Surface(
+                                        color = Color(0xFF141720),
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.dp, Color(0xFF262A38)),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(10.dp),
+                                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Text("Connected Firebase Project:", color = TextSub, fontSize = 11.sp)
+                                                Text("ai-football-predictor-3daad", color = activeAccent, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                            }
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Text("Firestore Cloud Path:", color = TextSub, fontSize = 11.sp)
+                                                Text("users/${currentUser.userId}/api_keys", color = TextMain, fontSize = 11.sp)
+                                            }
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Text("Security & Storage:", color = TextSub, fontSize = 11.sp)
+                                                Text("Encrypted Local Vault + Firestore", color = Color(0xFF4CAF50), fontSize = 11.sp)
+                                            }
+                                        }
+                                    }
+
                                     if (lastKeySyncStatus != null) {
                                         Surface(
                                             color = Color(0xFF161920),

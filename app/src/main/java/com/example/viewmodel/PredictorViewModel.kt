@@ -5,6 +5,8 @@ import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.BuildConfig
+import com.example.keymanager.ManagedApiKey
+import com.example.keymanager.KeyStatus
 import com.example.models.AccentColorMode
 import com.example.models.AiReasoningDepth
 import com.example.models.AppCustomSettings
@@ -574,6 +576,23 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
         }
         _userAddedModels.value = current
         saveUserModelsToPrefs(current)
+
+        // Automatically sync AI key to keyManager vault so it gets saved to Firestore
+        if (model.apiKey.isNotBlank()) {
+            val keyId = "ai_model_${model.id.replace(Regex("[^a-zA-Z0-9_-]"), "_")}"
+            val existing = keyManager.keysByRole.value[com.example.keymanager.ApiRole.OPENAI_COMPATIBLE]?.find { it.id == keyId || it.key == model.apiKey }
+            val apiKeyObj = ManagedApiKey(
+                id = existing?.id ?: keyId,
+                role = com.example.keymanager.ApiRole.OPENAI_COMPATIBLE.code,
+                key = model.apiKey.trim(),
+                label = model.name.ifBlank { "Custom AI (${model.id})" },
+                endpointUrl = model.endpointUrl.ifBlank { "https://api.openai.com/v1/" },
+                modelName = model.id,
+                status = KeyStatus.ACTIVE.name
+            )
+            keyManager.addOrUpdateKey(apiKeyObj)
+        }
+
         if (_customSettings.value.activeAiModelId.isBlank() || _customSettings.value.activeAiModelId == "gemini-2.5-flash") {
             updateActiveAiModel(model.id)
         }

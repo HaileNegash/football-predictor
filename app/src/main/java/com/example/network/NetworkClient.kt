@@ -97,9 +97,24 @@ object NetworkClient {
     private fun createOkHttpClient(): OkHttpClient {
         val builder = OkHttpClient.Builder()
         
+        // User-Agent and headers interceptor
+        builder.addInterceptor { chain ->
+            val original = chain.request()
+            val request = original.newBuilder()
+                .header("User-Agent", "FootballPredictor/2.4 (Android; en-US)")
+                .header("Accept", "application/json")
+                .build()
+            chain.proceed(request)
+        }
+
+        // Timeouts
+        builder.connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        builder.readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+        builder.writeTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+
         // Logging for debug
         val logging = HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BODY
+            level = HttpLoggingInterceptor.Level.BASIC
         }
         builder.addInterceptor(logging)
 

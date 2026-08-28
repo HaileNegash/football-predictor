@@ -42,6 +42,9 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.StarOutline
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -305,6 +308,17 @@ fun HomeScreen(
                 },
                 actions = {
                     IconButton(
+                        onClick = { viewModel.fetchFixtures(forceRefresh = true) },
+                        modifier = Modifier.testTag("btn_top_refresh")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Refresh,
+                            contentDescription = "Reload Matches",
+                            tint = AccentOrange,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                    IconButton(
                         onClick = onNavigateToHistory,
                         modifier = Modifier.testTag("btn_top_history")
                     ) {
@@ -336,29 +350,70 @@ fun HomeScreen(
         modifier = Modifier.fillMaxSize(),
         containerColor = AppDarkBg
     ) { innerPadding ->
-        if (isLoading) {
-            Box(modifier = Modifier.fillMaxSize().background(AppDarkBg), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = AccentOrange)
-            }
-        } else if (errorMessage != null) {
-            Box(modifier = Modifier.fillMaxSize().background(AppDarkBg).padding(24.dp), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(text = errorMessage ?: "", color = Color(0xFFFF5252), style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Button(onClick = onNavigateToSettings, colors = ButtonDefaults.buttonColors(containerColor = AccentOrange)) {
-                        Text("Configure API Key", color = Color.White)
+        @OptIn(ExperimentalMaterial3Api::class)
+        PullToRefreshBox(
+            isRefreshing = isLoading,
+            onRefresh = { viewModel.fetchFixtures(forceRefresh = true) },
+            modifier = Modifier
+                .fillMaxSize()
+                .background(AppDarkBg)
+                .padding(innerPadding)
+                .imePadding()
+        ) {
+            if (isLoading && countries.isEmpty() && errorMessage == null) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = AccentOrange)
+                }
+            } else if (errorMessage != null && countries.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = Icons.Filled.Warning,
+                            contentDescription = null,
+                            tint = Color(0xFFFF5252),
+                            modifier = Modifier.size(44.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = errorMessage ?: "",
+                            color = Color(0xFFFF5252),
+                            style = MaterialTheme.typography.bodyLarge,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Pull down to reload or configure your API key",
+                            color = TextSub,
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            OutlinedButton(
+                                onClick = { viewModel.fetchFixtures(forceRefresh = true) },
+                                border = BorderStroke(1.dp, AccentOrange)
+                            ) {
+                                Text("Retry", color = AccentOrange)
+                            }
+                            Button(
+                                onClick = onNavigateToSettings,
+                                colors = ButtonDefaults.buttonColors(containerColor = AccentOrange)
+                            ) {
+                                Text("Configure API Key", color = Color.White)
+                            }
+                        }
                     }
                 }
-            }
-        } else {
-            val focusManager = LocalFocusManager.current
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(AppDarkBg)
-                    .padding(innerPadding)
-                    .imePadding()
-            ) {
+            } else {
+                val focusManager = LocalFocusManager.current
+                Column(
+                    modifier = Modifier.fillMaxSize()
+                ) {
                 val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
                 
                 // Date Bar matching screenshot exactly
@@ -561,6 +616,7 @@ fun HomeScreen(
             }
         }
     }
+}
 }
 
 @Composable

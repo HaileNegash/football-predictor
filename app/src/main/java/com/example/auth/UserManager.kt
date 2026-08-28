@@ -53,7 +53,11 @@ class UserManager(private val context: Context) {
 
     private fun loadStoredUser(): UserProfile {
         val today = getTodayDateString()
-        val userId = prefs.getString("user_id", null)
+        var userId = prefs.getString("user_id", null)
+        if (userId.isNullOrBlank() || userId.startsWith("user_")) {
+            userId = "primary_user"
+            prefs.edit().putString("user_id", userId).commit()
+        }
         val email = prefs.getString("user_email", "guest@footballpredictor.app") ?: "guest@footballpredictor.app"
         val name = prefs.getString("user_name", "Football Fan") ?: "Football Fan"
         val photoUrl = prefs.getString("user_photo", null)
@@ -68,7 +72,7 @@ class UserManager(private val context: Context) {
         val actualUsed = if (lastDate == today) used else 0
 
         return UserProfile(
-            userId = userId ?: "guest_${System.currentTimeMillis() % 100000}",
+            userId = userId,
             email = email,
             displayName = name,
             photoUrl = photoUrl,
@@ -95,7 +99,7 @@ class UserManager(private val context: Context) {
             .putBoolean("user_auto_sign_in", user.isAutoSignedIn)
             .putBoolean("user_remember_pw", user.rememberPassword)
             .putLong("user_joined_at", user.joinedAt)
-            .apply()
+            .commit()
     }
 
     fun updateDisplayName(newName: String) {

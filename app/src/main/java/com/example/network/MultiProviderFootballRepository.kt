@@ -14,19 +14,38 @@ class MultiProviderFootballRepository(
 ) {
     private val tag = "MultiProviderFootball"
 
+    // In-memory cache for fetched fixtures with 15-minute expiration to prevent API-Football spam
+    private val fixtureCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, List<Country>>>()
+    private val cacheTtlMillis = 15 * 60 * 1000L // 15 minutes
+
+    // Rate limiter tracker for API-Sports (max 10 req/min on free tier)
+    private var lastApiFootballCallTime = 0L
+    private val minCallIntervalMillis = 3500L // 3.5s spacing between calls
+
     suspend fun fetchFixtures(dateStr: String, dateToStr: String? = null, forceRefresh: Boolean = false): Result<List<Country>> = withContext(Dispatchers.IO) {
+        val targetDateTo = dateToStr ?: dateStr
+        val cacheKey = "$dateStr::$targetDateTo"
+
+        // 0. Check cache first if not forced refresh
+        if (!forceRefresh) {
+            val cached = fixtureCache[cacheKey]
+            if (cached != null && (System.currentTimeMillis() - cached.first) < cacheTtlMillis) {
+                Log.d(tag, "Serving fixtures from local cache for $cacheKey (protecting API quota)")
+                return@withContext Result.success(cached.second)
+            }
+        }
+
         // Check which keys are available in rotation / cloud vault
         val footballDataKey = keyManager.getActiveKey(ApiRole.FOOTBALL_DATA_ORG)
         val apiFootballKey = keyManager.getActiveKey(ApiRole.API_FOOTBALL)
         val sportmonksKey = keyManager.getActiveKey(ApiRole.SPORTMONKS)
         val theSportsDbKey = keyManager.getActiveKey(ApiRole.THE_SPORTS_DB)
 
-        val targetDateTo = dateToStr ?: dateStr
-        Log.i(tag, "Checking football providers: FootballData=$footballDataKey, ApiFootball=$apiFootballKey, Sportmonks=$sportmonksKey, SportsDb=$theSportsDbKey for range $dateStr to $targetDateTo")
+        Log.i(tag, "Checking football providers: FootballData=${footballDataKey?.take(4)}, ApiFootball=${apiFootballKey?.take(4)}, Sportmonks=${sportmonksKey?.take(4)}, SportsDb=${theSportsDbKey?.take(4)} for range $dateStr to $targetDateTo")
 
         var lastError: Exception? = null
 
-        // 1. Try Football-Data.org (Best free tier for 12 top leagues, supports dateFrom/dateTo up to 10 days!)
+        // 1. Try Football-Data.org first (Best free tier for 12 top leagues, supports date range up to 10 days!)
         if (!footballDataKey.isNullOrBlank()) {
             try {
                 val service = NetworkClient.createRetrofit("https://api.football-data.org/v4/").create(FootballDataOrgApi::class.java)
@@ -34,8 +53,8 @@ class MultiProviderFootballRepository(
                 if (response.matches.isNotEmpty()) {
                     val countries = FootballDataOrgMapper.mapToCountries(response)
                     keyManager.reportKeySuccess(ApiRole.FOOTBALL_DATA_ORG, footballDataKey)
-                    // Optionally enrich with The Odds API if available
                     val enriched = enrichWithTheOddsApi(countries)
+                    fixtureCache[cacheKey] = Pair(System.currentTimeMillis(), enriched)
                     return@withContext Result.success(enriched)
                 }
             } catch (e: Exception) {
@@ -47,12 +66,35 @@ class MultiProviderFootballRepository(
             }
         }
 
-        // 2. Try API-Football (API-Sports)
+        // 2. Try API-Football (API-Sports) with safety throttle and error inspection
         if (!apiFootballKey.isNullOrBlank()) {
             try {
+                // Anti-Suspension Throttling: Ensure minimum interval between requests
+                val now = System.currentTimeMillis()
+                val elapsedSinceLast = now - lastApiFootballCallTime
+                if (elapsedSinceLast < minCallIntervalMillis) {
+                    kotlinx.coroutines.delay(minCallIntervalMillis - elapsedSinceLast)
+                }
+                lastApiFootballCallTime = System.currentTimeMillis()
+
                 val response = NetworkClient.apiFootballService.getFixtures(apiFootballKey, dateStr)
+                
+                // Inspect errors in response body (API-Football returns HTTP 200 with error payload)
+                val errorsObj = response.errors
+                val errorString = errorsObj?.toString() ?: ""
+                val hasErrors = errorString.isNotBlank() && errorString != "{}" && errorString != "[]"
+
+                if (hasErrors) {
+                    Log.w(tag, "API-Football returned error payload: $errorString")
+                    if (errorString.contains("rate", ignoreCase = true) || 
+                        errorString.contains("quota", ignoreCase = true) || 
+                        errorString.contains("requests", ignoreCase = true) ||
+                        errorString.contains("limit", ignoreCase = true)) {
+                        keyManager.reportKeyRateLimited(ApiRole.API_FOOTBALL, apiFootballKey)
+                    }
+                }
+
                 if (response.response.isNotEmpty()) {
-                    val bigCountries = listOf("England", "Spain", "Germany", "Italy", "France", "World")
                     val mappedCountries = response.response.groupBy { it.league.country }
                         .map { (countryName, fixturesForCountry) ->
                             val firstFixture = fixturesForCountry.firstOrNull()
@@ -97,11 +139,15 @@ class MultiProviderFootballRepository(
                         }
                     keyManager.reportKeySuccess(ApiRole.API_FOOTBALL, apiFootballKey)
                     val enriched = enrichWithTheOddsApi(mappedCountries)
+                    fixtureCache[cacheKey] = Pair(System.currentTimeMillis(), enriched)
                     return@withContext Result.success(enriched)
                 }
             } catch (e: Exception) {
                 Log.w(tag, "API-Football fetch failed: ${e.message}")
                 lastError = e
+                if (e.message?.contains("429") == true || e.message?.contains("403") == true) {
+                    keyManager.reportKeyRateLimited(ApiRole.API_FOOTBALL, apiFootballKey)
+                }
             }
         }
 
@@ -113,7 +159,9 @@ class MultiProviderFootballRepository(
                 if (response.data.isNotEmpty()) {
                     val countries = SportmonksMapper.mapToCountries(response)
                     keyManager.reportKeySuccess(ApiRole.SPORTMONKS, sportmonksKey)
-                    return@withContext Result.success(enrichWithTheOddsApi(countries))
+                    val enriched = enrichWithTheOddsApi(countries)
+                    fixtureCache[cacheKey] = Pair(System.currentTimeMillis(), enriched)
+                    return@withContext Result.success(enriched)
                 }
             } catch (e: Exception) {
                 Log.w(tag, "Sportmonks fetch failed: ${e.message}")
@@ -130,7 +178,9 @@ class MultiProviderFootballRepository(
                 if (!response.events.isNullOrEmpty()) {
                     val countries = TheSportsDbMapper.mapToCountries(response)
                     if (theSportsDbKey != null) keyManager.reportKeySuccess(ApiRole.THE_SPORTS_DB, theSportsDbKey)
-                    return@withContext Result.success(enrichWithTheOddsApi(countries))
+                    val enriched = enrichWithTheOddsApi(countries)
+                    fixtureCache[cacheKey] = Pair(System.currentTimeMillis(), enriched)
+                    return@withContext Result.success(enriched)
                 }
             } catch (e: Exception) {
                 Log.w(tag, "TheSportsDB fetch failed: ${e.message}")

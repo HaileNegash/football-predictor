@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
@@ -160,7 +161,7 @@ class KeyRotationManager(
     private fun saveKeysToLocal(role: ApiRole, keys: List<ManagedApiKey>) {
         try {
             val json = adapter.toJson(keys)
-            prefs.edit().putString("keys_${role.code}", json).apply()
+            prefs.edit().putString("keys_${role.code}", json).commit()
         } catch (e: Exception) {
             Log.e(tag, "Failed to save local keys for ${role.code}", e)
         }
@@ -199,13 +200,13 @@ class KeyRotationManager(
 
                 // Merge remote keys
                 remoteKeys.forEach { rKey ->
-                    val local = mergedKeysMap[rKey.id]
-                    if (local == null) {
+                    val existingKey = mergedKeysMap[rKey.id] ?: mergedKeysMap.values.find { it.key == rKey.key }
+                    if (existingKey == null) {
                         mergedKeysMap[rKey.id] = rKey
                     } else {
                         // If remote has newer activity or testing status, keep it
-                        if (rKey.lastTestedAt >= local.lastTestedAt) {
-                            mergedKeysMap[rKey.id] = rKey
+                        if (rKey.lastTestedAt >= existingKey.lastTestedAt) {
+                            mergedKeysMap[existingKey.id] = rKey
                         }
                     }
                 }
@@ -497,11 +498,13 @@ class KeyRotationManager(
      * Performs a fast connectivity diagnostics check for an API key.
      */
     fun testKeyConnection(apiKey: ManagedApiKey, onResult: (Boolean, String) -> Unit) {
-        scope.launch {
+        scope.launch(Dispatchers.IO) {
             val role = apiKey.apiRole
             val keyVal = apiKey.key.trim()
             if (keyVal.isBlank()) {
-                onResult(false, "API Key is empty")
+                withContext(Dispatchers.Main) {
+                    onResult(false, "API Key is empty")
+                }
                 return@launch
             }
 
@@ -643,7 +646,9 @@ class KeyRotationManager(
             )
             addOrUpdateKey(updated)
 
-            onResult(success, message)
+            withContext(Dispatchers.Main) {
+                onResult(success, message)
+            }
         }
     }
 }
