@@ -7,6 +7,13 @@ enum class BatchItemStatus(val label: String, val colorHex: Long) {
     FAILED("FAILED", 0xFFFF5252)
 }
 
+enum class BetOutcomeStatus(val label: String, val colorHex: Long) {
+    PENDING("PENDING", 0xFFFFB300),
+    WON("WON", 0xFF00E676),
+    LOST("LOST", 0xFFFF5252),
+    VOID("VOID", 0xFF90A4AE)
+}
+
 data class AgentBatchMatchItem(
     val matchId: Int,
     val homeTeam: String,
@@ -27,6 +34,25 @@ data class AgentStreamLog(
     val type: String = "INFO" // "INFO", "SEARCH", "AI", "SUCCESS", "WARN"
 )
 
+data class ApiFallbackPrompt(
+    val matchId: Int,
+    val matchIndex: Int,
+    val totalMatches: Int,
+    val homeTeam: String,
+    val awayTeam: String,
+    val leagueName: String,
+    val modelName: String,
+    val errorMessage: String,
+    val isAuthError: Boolean = false
+)
+
+enum class FallbackDecision {
+    USE_LOCAL_ONCE,
+    USE_LOCAL_ALL,
+    RETRY_API,
+    CANCEL
+}
+
 data class PredictedBetItem(
     val matchId: Int,
     val homeTeam: String,
@@ -39,7 +65,12 @@ data class PredictedBetItem(
     val confidence: Int,
     val rationale: String,
     val simulatedOdds: String = "1.75",
-    val betTypeCategory: String = "1X2"
+    val betTypeCategory: String = "1X2",
+    val matchStatus: String? = null, // e.g. "FT", "HT", "90'", "LIVE", "NS"
+    val homeScore: Int? = null,
+    val awayScore: Int? = null,
+    val outcomeStatus: String = "PENDING", // "PENDING", "WON", "LOST", "VOID"
+    val outcomeExplanation: String? = null
 )
 
 data class SavedPredictionSlip(
@@ -56,5 +87,12 @@ data class SavedPredictionSlip(
     val estimatedPayout: Double = 0.0,
     val potentialProfit: Double = 0.0,
     val targetMin: Float = 10f,
-    val targetMax: Float = 250f
+    val targetMax: Float = 250f,
+    val overallStatus: String = "PENDING", // "PENDING", "WON", "LOST", "PARTIAL"
+    val wonItemsCount: Int = 0,
+    val lostItemsCount: Int = 0,
+    val voidItemsCount: Int = 0,
+    val pendingItemsCount: Int = 0,
+    val lastCheckedTimestamp: Long? = null
 )
+

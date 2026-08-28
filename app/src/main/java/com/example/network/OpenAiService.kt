@@ -20,7 +20,7 @@ object OpenAiService {
     private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
     private val httpClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
+        NetworkClient.okHttpClient.newBuilder()
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
@@ -119,8 +119,9 @@ object OpenAiService {
             val responseBody = response.body?.string() ?: ""
 
             if (!response.isSuccessful) {
-                Log.e(TAG, "OpenAI Compatible request failed: HTTP ${response.code} - $responseBody")
-                return@withContext Result.failure(Exception("HTTP ${response.code}: $responseBody"))
+                val cleanErrorMsg = extractErrorMessageFromJson(responseBody, response.code)
+                Log.w(TAG, "OpenAI Compatible request failed: HTTP ${response.code} - $cleanErrorMsg")
+                return@withContext Result.failure(Exception(cleanErrorMsg))
             }
 
             val jsonObject = JSONObject(responseBody)
@@ -291,6 +292,33 @@ object OpenAiService {
                 odds = "1.85",
                 betType = "1X2"
             )
+        }
+    }
+
+    fun extractErrorMessageFromJson(body: String, statusCode: Int): String {
+        if (body.isBlank()) return "HTTP $statusCode"
+        return try {
+            val json = JSONObject(body)
+            if (json.has("error")) {
+                val errObj = json.optJSONObject("error")
+                if (errObj != null) {
+                    val msg = errObj.optString("message", "")
+                    val code = errObj.optString("code", "")
+                    if (msg.isNotBlank()) {
+                        return if (code.isNotBlank()) "$msg (code: $code)" else msg
+                    }
+                } else {
+                    val msg = json.optString("error", "")
+                    if (msg.isNotBlank()) return msg
+                }
+            }
+            if (json.has("message")) {
+                val msg = json.optString("message", "")
+                if (msg.isNotBlank()) return msg
+            }
+            "HTTP $statusCode: ${body.take(120)}"
+        } catch (_: Exception) {
+            "HTTP $statusCode: ${body.take(120)}"
         }
     }
 }

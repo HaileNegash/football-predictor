@@ -41,7 +41,11 @@ import androidx.compose.material.icons.filled.LocalActivity
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SportsSoccer
-import androidx.compose.material.icons.filled.TrendingUp
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.FactCheck
+import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.HourglassEmpty
+import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -321,15 +325,62 @@ fun PredictedBetsResultScreen(
                                         fontFamily = FontFamily.Monospace
                                     )
                                 }
-                                Text(
-                                    text = slip.dateString,
-                                    color = TextMuted,
-                                    fontSize = 10.sp,
-                                    fontFamily = FontFamily.Monospace
-                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    SlipOutcomeBadge(status = slip.overallStatus)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = slip.dateString,
+                                        color = TextMuted,
+                                        fontSize = 10.sp,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
                             }
 
                             Spacer(modifier = Modifier.height(12.dp))
+
+                            // Outcome Verification Action Row
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        viewModel.verifySlipOutcomes(slip.slipId, simulateIfMissing = false)
+                                        Toast.makeText(context, "Checking match results...", Toast.LENGTH_SHORT).show()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = activeAccent),
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(34.dp)
+                                ) {
+                                    Icon(imageVector = Icons.Filled.FactCheck, contentDescription = null, tint = Color.Black, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Check Results", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+
+                                OutlinedButton(
+                                    onClick = {
+                                        viewModel.verifySlipOutcomes(slip.slipId, simulateIfMissing = true)
+                                        Toast.makeText(context, "Simulated match outcomes", Toast.LENGTH_SHORT).show()
+                                    },
+                                    colors = ButtonDefaults.outlinedButtonColors(containerColor = InnerCardBg),
+                                    border = BorderStroke(1.dp, CyberCyan.copy(alpha = 0.5f)),
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(34.dp)
+                                ) {
+                                    Icon(imageVector = Icons.Filled.AutoAwesome, contentDescription = null, tint = CyberCyan, modifier = Modifier.size(13.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Simulate Results", color = CyberCyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
 
                             // 3 Key Slip Metric Pills
                             Row(
@@ -418,9 +469,9 @@ fun PredictedBetsResultScreen(
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Column {
+                                        Column(modifier = Modifier.weight(1f, fill = false)) {
                                             Text(
-                                                "ESTIMATED PAYOUT (Stake × Odds)",
+                                                "ESTIMATED PAYOUT",
                                                 color = CyberGold,
                                                 fontSize = 10.sp,
                                                 fontWeight = FontWeight.Bold,
@@ -457,7 +508,9 @@ fun PredictedBetsResultScreen(
                                                     color = CyberEmerald,
                                                     fontSize = 12.sp,
                                                     fontWeight = FontWeight.Bold,
-                                                    fontFamily = FontFamily.Monospace
+                                                    fontFamily = FontFamily.Monospace,
+                                                    maxLines = 1,
+                                                    softWrap = false
                                                 )
                                             }
                                         }
@@ -548,6 +601,10 @@ fun PredictedBetsResultScreen(
                                 }
 
                                 Row(verticalAlignment = Alignment.CenterVertically) {
+                                    // Item Outcome Badge
+                                    ItemOutcomeBadge(status = item.outcomeStatus)
+                                    Spacer(modifier = Modifier.width(6.dp))
+
                                     // Bet Type Market Badge
                                     Surface(
                                         color = activeAccent.copy(alpha = 0.15f),
@@ -601,6 +658,50 @@ fun PredictedBetsResultScreen(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
+
+                            // Verified Match Score & Explanation if available
+                            if (item.homeScore != null && item.awayScore != null) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Surface(
+                                    color = Color(0xFF0E1016),
+                                    shape = RoundedCornerShape(6.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(
+                                                    imageVector = Icons.Filled.SportsSoccer,
+                                                    contentDescription = null,
+                                                    tint = CyberCyan,
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text(
+                                                    text = "Score: ${item.homeScore} - ${item.awayScore} (${item.matchStatus ?: "FT"})",
+                                                    color = TextWhite,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontFamily = FontFamily.Monospace
+                                                )
+                                            }
+                                        }
+                                        if (!item.outcomeExplanation.isNullOrBlank()) {
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                text = item.outcomeExplanation,
+                                                color = if (item.outcomeStatus == "WON") CyberEmerald else if (item.outcomeStatus == "LOST") Color(0xFFFF5252) else TextMuted,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        }
+                                    }
+                                }
+                            }
 
                             Spacer(modifier = Modifier.height(8.dp))
 
@@ -678,7 +779,7 @@ fun PredictedBetsResultScreen(
                                                 modifier = Modifier.size(15.dp)
                                             )
                                             Spacer(modifier = Modifier.width(8.dp))
-                                            Column {
+                                            Column(modifier = Modifier.weight(1f, fill = false)) {
                                                 Text(
                                                     "AI TACTICAL RATIONALE",
                                                     color = CyberCyan,

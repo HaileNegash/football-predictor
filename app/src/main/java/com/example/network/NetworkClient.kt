@@ -58,7 +58,13 @@ class Tls12SocketFactory(private val delegate: SSLSocketFactory) : SSLSocketFact
 
     private fun patch(s: Socket): Socket {
         if (s is SSLSocket) {
-            s.enabledProtocols = TLS_V12_ONLY
+            val supported = s.supportedProtocols ?: emptyArray()
+            val enabled = if (supported.contains("TLSv1.2")) {
+                if (supported.contains("TLSv1.3")) arrayOf("TLSv1.3", "TLSv1.2") else arrayOf("TLSv1.2")
+            } else {
+                supported
+            }
+            s.enabledProtocols = enabled
         }
         return s
     }

@@ -172,6 +172,32 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
     val moneyRange: StateFlow<ClosedFloatingPointRange<Float>> = _moneyRange.asStateFlow()
 
     // App Custom Settings
+    private val _useLocalEngineOnly = MutableStateFlow(prefs.getBoolean("use_local_engine_only", false))
+    val useLocalEngineOnly: StateFlow<Boolean> = _useLocalEngineOnly.asStateFlow()
+
+    fun setUseLocalEngineOnly(useLocal: Boolean) {
+        _useLocalEngineOnly.value = useLocal
+        prefs.edit().putBoolean("use_local_engine_only", useLocal).apply()
+    }
+
+    fun hasConfiguredAiKey(): Boolean {
+        val activeModelName = _customSettings.value.activeAiModelId
+        val userModel = _userAddedModels.value.find { it.id == activeModelName }
+        val openAiKey = keyManager.getActiveManagedKey(com.example.keymanager.ApiRole.OPENAI_COMPATIBLE)
+        return (userModel != null && userModel.apiKey.isNotBlank()) || (openAiKey != null && openAiKey.key.isNotBlank())
+    }
+
+    fun getActiveAiKeyMasked(): String? {
+        val activeModelName = _customSettings.value.activeAiModelId
+        val userModel = _userAddedModels.value.find { it.id == activeModelName }
+        if (userModel != null && userModel.apiKey.isNotBlank()) {
+            val k = userModel.apiKey
+            return if (k.length > 8) "${k.take(4)}...${k.takeLast(4)}" else "••••••••"
+        }
+        val openAiKey = keyManager.getActiveManagedKey(com.example.keymanager.ApiRole.OPENAI_COMPATIBLE)
+        return openAiKey?.maskedKey
+    }
+
     private val _customSettings = MutableStateFlow(
         AppCustomSettings(
             themeMode = ThemeMode.fromId(prefs.getString("app_theme_mode", "cyber_dark") ?: "cyber_dark"),
@@ -217,10 +243,31 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
     private val _currentActivePredictingIndex = MutableStateFlow(-1)
     val currentActivePredictingIndex: StateFlow<Int> = _currentActivePredictingIndex.asStateFlow()
 
+    // API Fallback Prompt for Interactive User Decision
+    private val _apiFallbackPrompt = MutableStateFlow<com.example.models.ApiFallbackPrompt?>(null)
+    val apiFallbackPrompt: StateFlow<com.example.models.ApiFallbackPrompt?> = _apiFallbackPrompt.asStateFlow()
+
+    private var fallbackCompleter: kotlinx.coroutines.CompletableDeferred<com.example.models.FallbackDecision>? = null
+
+    fun submitFallbackDecision(decision: com.example.models.FallbackDecision) {
+        _apiFallbackPrompt.value = null
+        fallbackCompleter?.complete(decision)
+        fallbackCompleter = null
+    }
+
     init {
         loadSavedSlipsFromStorage()
         fetchFixtures()
         setupKeyVaultObserver()
+        setupUserKeySync()
+    }
+
+    private fun setupUserKeySync() {
+        viewModelScope.launch {
+            userManager.currentUser.collect { user ->
+                keyManager.setUserId(user.userId)
+            }
+        }
     }
 
     private fun setupKeyVaultObserver() {
@@ -733,29 +780,6 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun exportSlipsAsFormattedText(): String {
-        val slips = _savedSlipsHistory.value
-        if (slips.isEmpty()) return "No saved prediction slips."
-
-        val sb = StringBuilder()
-        sb.append("⚽ SMART BETTING PREDICTOR — SAVED BET SLIPS\n")
-        sb.append("==========================================\n\n")
-
-        slips.forEachIndexed { index, slip ->
-            sb.append("📋 SLIP #${index + 1} (${slip.slipId}) — ${slip.dateString}\n")
-            sb.append("Combined Odds: @${slip.totalCombinedOdds} | Avg Confidence: ${slip.averageConfidence}%\n")
-            sb.append("Stake: ${slip.currencySymbol}${String.format(Locale.US, "%.2f", slip.budgetStake)} ➔ Est. Return: ${slip.currencySymbol}${String.format(Locale.US, "%.2f", slip.estimatedPayout)}\n")
-            sb.append("------------------------------------------\n")
-            slip.items.forEach { item ->
-                sb.append("• ${item.homeTeam} vs ${item.awayTeam}\n")
-                sb.append("  Pick: ${item.recommendedBet} (@${item.simulatedOdds} • ${item.confidence}% Conf)\n")
-                sb.append("  Rationale: ${item.rationale}\n")
-            }
-            sb.append("\n==========================================\n\n")
-        }
-        return sb.toString()
-    }
-
     // ==================== BATCH PREDICTION ENGINE ====================
 
     fun prepareBatchForPrediction() {
@@ -874,6 +898,9 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
             addLog("⚡ Starting Autonomous Agent Prediction Engine ($activeModelName)...", "INFO")
 
             val openAiManagedKey = keyManager.getActiveManagedKey(com.example.keymanager.ApiRole.OPENAI_COMPATIBLE)
+            val geminiManagedKey = keyManager.getActiveManagedKey(com.example.keymanager.ApiRole.GEMINI)
+            var keyFailedInBatch = false
+            var fallbackForAllRemaining = false
 
             for (i in list.indices) {
                 val item = _batchMatchItems.value[i]
@@ -907,25 +934,59 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                     }
                 }
 
-                addLog("🧠 Synthesizing tactical probabilities with model $activeModelName...", "AI")
-                delay(500)
-
                 val userModel = _userAddedModels.value.find { it.id == activeModelName }
-                val effectiveKey = if (userModel != null && userModel.apiKey.isNotBlank()) {
-                    com.example.keymanager.ManagedApiKey(
-                        role = com.example.keymanager.ApiRole.OPENAI_COMPATIBLE.code,
-                        key = userModel.apiKey,
-                        endpointUrl = userModel.endpointUrl,
-                        modelName = userModel.id
-                    )
-                } else if (openAiManagedKey != null && openAiManagedKey.key.isNotBlank()) {
-                    openAiManagedKey.copy(
-                        modelName = activeModelName,
-                        endpointUrl = userModel?.endpointUrl?.ifBlank { openAiManagedKey.endpointUrl } ?: openAiManagedKey.endpointUrl
-                    )
+                val isExplicitLocal = _useLocalEngineOnly.value || fallbackForAllRemaining
+                val isGeminiModel = activeModelName.contains("gemini", ignoreCase = true)
+
+                val effectiveKey = if (!keyFailedInBatch && !isExplicitLocal) {
+                    if (userModel != null && userModel.apiKey.isNotBlank()) {
+                        com.example.keymanager.ManagedApiKey(
+                            role = com.example.keymanager.ApiRole.OPENAI_COMPATIBLE.code,
+                            key = userModel.apiKey,
+                            endpointUrl = userModel.endpointUrl,
+                            modelName = userModel.id
+                        )
+                    } else if (isGeminiModel && geminiManagedKey != null && geminiManagedKey.key.isNotBlank()) {
+                        com.example.keymanager.ManagedApiKey(
+                            role = com.example.keymanager.ApiRole.OPENAI_COMPATIBLE.code,
+                            key = geminiManagedKey.key,
+                            endpointUrl = "https://generativelanguage.googleapis.com/v1beta/openai/",
+                            modelName = activeModelName
+                        )
+                    } else if (openAiManagedKey != null && openAiManagedKey.key.isNotBlank()) {
+                        openAiManagedKey.copy(
+                            modelName = activeModelName,
+                            endpointUrl = userModel?.endpointUrl?.ifBlank { openAiManagedKey.endpointUrl } ?: openAiManagedKey.endpointUrl
+                        )
+                    } else if (geminiManagedKey != null && geminiManagedKey.key.isNotBlank()) {
+                        com.example.keymanager.ManagedApiKey(
+                            role = com.example.keymanager.ApiRole.OPENAI_COMPATIBLE.code,
+                            key = geminiManagedKey.key,
+                            endpointUrl = "https://generativelanguage.googleapis.com/v1beta/openai/",
+                            modelName = if (isGeminiModel) activeModelName else "gemini-2.5-flash"
+                        )
+                    } else null
                 } else null
 
-                val prediction = if (effectiveKey != null && effectiveKey.key.isNotBlank()) {
+                if (isExplicitLocal) {
+                    addLog("⚡ [Local Engine] Synthesizing tactical probabilities with local Poisson & quant xG model...", "INFO")
+                } else if (effectiveKey != null) {
+                    addLog("🧠 Synthesizing tactical probabilities with model $activeModelName...", "AI")
+                } else {
+                    addLog("⚠️ [Engine Setup Required] No API key configured for model $activeModelName...", "WARN")
+                }
+                delay(500)
+
+                var finalPrediction: PredictionResult? = null
+
+                if (isExplicitLocal) {
+                    finalPrediction = generateSmartMockPrediction(item.homeTeam, item.awayTeam)
+                } else if (effectiveKey != null && effectiveKey.key.isNotBlank()) {
+                    var resolvedFromApi = false
+                    var currentError: String = ""
+                    var isAuthError = false
+
+                    // Initial attempt
                     val result = com.example.network.OpenAiService.generatePrediction(
                         homeTeam = item.homeTeam,
                         awayTeam = item.awayTeam,
@@ -934,16 +995,124 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                         allowedBetTypes = _selectedBetTypes.value.toList(),
                         tacticalIntel = squadIntelSummary
                     )
+
                     if (result.isSuccess) {
                         keyManager.reportKeySuccess(com.example.keymanager.ApiRole.OPENAI_COMPATIBLE, effectiveKey.key)
-                        result.getOrNull()
+                        finalPrediction = result.getOrNull()
+                        resolvedFromApi = true
                     } else {
-                        keyManager.reportKeyError(com.example.keymanager.ApiRole.OPENAI_COMPATIBLE, effectiveKey.key, isAuthError = false)
-                        generateSmartMockPrediction(item.homeTeam, item.awayTeam)
+                        currentError = result.exceptionOrNull()?.message ?: "External API request failed"
+                        isAuthError = currentError.contains("401") || currentError.contains("403") ||
+                                      currentError.contains("Incorrect API key", ignoreCase = true) ||
+                                      currentError.contains("invalid_api_key", ignoreCase = true)
+                        keyManager.reportKeyError(com.example.keymanager.ApiRole.OPENAI_COMPATIBLE, effectiveKey.key, isAuthError = isAuthError)
+                    }
+
+                    // If failed, pause and ask the user for fallback decision
+                    while (!resolvedFromApi && !fallbackForAllRemaining && finalPrediction == null) {
+                        addLog("⚠️ API Failed on ${item.homeTeam} vs ${item.awayTeam}: $currentError", "WARN")
+                        addLog("✋ Pausing batch. Awaiting user confirmation for local fallback...", "INFO")
+
+                        val deferred = kotlinx.coroutines.CompletableDeferred<com.example.models.FallbackDecision>()
+                        fallbackCompleter = deferred
+
+                        _apiFallbackPrompt.value = com.example.models.ApiFallbackPrompt(
+                            matchId = item.matchId,
+                            matchIndex = i + 1,
+                            totalMatches = list.count { it.isSelected },
+                            homeTeam = item.homeTeam,
+                            awayTeam = item.awayTeam,
+                            leagueName = item.leagueName,
+                            modelName = activeModelName,
+                            errorMessage = currentError,
+                            isAuthError = isAuthError
+                        )
+
+                        val decision = deferred.await()
+                        when (decision) {
+                            com.example.models.FallbackDecision.USE_LOCAL_ONCE -> {
+                                addLog("✓ User approved Local Engine fallback for ${item.homeTeam} vs ${item.awayTeam}.", "SUCCESS")
+                                finalPrediction = generateSmartMockPrediction(item.homeTeam, item.awayTeam)
+                            }
+                            com.example.models.FallbackDecision.USE_LOCAL_ALL -> {
+                                fallbackForAllRemaining = true
+                                addLog("✓ User switched all remaining fixtures to Local Engine.", "SUCCESS")
+                                finalPrediction = generateSmartMockPrediction(item.homeTeam, item.awayTeam)
+                            }
+                            com.example.models.FallbackDecision.RETRY_API -> {
+                                addLog("🔄 Retrying external API for ${item.homeTeam} vs ${item.awayTeam}...", "INFO")
+                                delay(600)
+                                val retryResult = com.example.network.OpenAiService.generatePrediction(
+                                    homeTeam = item.homeTeam,
+                                    awayTeam = item.awayTeam,
+                                    league = item.leagueName,
+                                    managedKey = effectiveKey,
+                                    allowedBetTypes = _selectedBetTypes.value.toList(),
+                                    tacticalIntel = squadIntelSummary
+                                )
+                                if (retryResult.isSuccess) {
+                                    keyManager.reportKeySuccess(com.example.keymanager.ApiRole.OPENAI_COMPATIBLE, effectiveKey.key)
+                                    finalPrediction = retryResult.getOrNull()
+                                    resolvedFromApi = true
+                                    addLog("✅ API Retry succeeded!", "SUCCESS")
+                                } else {
+                                    currentError = retryResult.exceptionOrNull()?.message ?: "Retry failed"
+                                    isAuthError = currentError.contains("401") || currentError.contains("403") ||
+                                                  currentError.contains("Incorrect API key", ignoreCase = true) ||
+                                                  currentError.contains("invalid_api_key", ignoreCase = true)
+                                }
+                            }
+                            com.example.models.FallbackDecision.CANCEL -> {
+                                addLog("🛑 User cancelled remaining batch predictions.", "WARN")
+                                _currentActivePredictingIndex.value = -1
+                                _isAgentRunning.value = false
+                                return@launch
+                            }
+                        }
                     }
                 } else {
-                    generateSmartMockPrediction(item.homeTeam, item.awayTeam)
+                    // No effective API key configured for Cloud AI: Prompt user explicitly!
+                    addLog("⚠️ Pausing batch: No API Key configured for $activeModelName.", "WARN")
+                    val deferred = kotlinx.coroutines.CompletableDeferred<com.example.models.FallbackDecision>()
+                    fallbackCompleter = deferred
+
+                    _apiFallbackPrompt.value = com.example.models.ApiFallbackPrompt(
+                        matchId = item.matchId,
+                        matchIndex = i + 1,
+                        totalMatches = list.count { it.isSelected },
+                        homeTeam = item.homeTeam,
+                        awayTeam = item.awayTeam,
+                        leagueName = item.leagueName,
+                        modelName = activeModelName,
+                        errorMessage = "No API Key configured in Settings / Vault for model '$activeModelName'.",
+                        isAuthError = true
+                    )
+
+                    val decision = deferred.await()
+                    when (decision) {
+                        com.example.models.FallbackDecision.USE_LOCAL_ONCE -> {
+                            addLog("✓ User approved Local Engine for ${item.homeTeam} vs ${item.awayTeam}.", "SUCCESS")
+                            finalPrediction = generateSmartMockPrediction(item.homeTeam, item.awayTeam)
+                        }
+                        com.example.models.FallbackDecision.USE_LOCAL_ALL -> {
+                            fallbackForAllRemaining = true
+                            addLog("✓ User switched all remaining fixtures to Local Engine.", "SUCCESS")
+                            finalPrediction = generateSmartMockPrediction(item.homeTeam, item.awayTeam)
+                        }
+                        com.example.models.FallbackDecision.RETRY_API -> {
+                            addLog("🔄 Re-evaluating keys...", "INFO")
+                            finalPrediction = generateSmartMockPrediction(item.homeTeam, item.awayTeam)
+                        }
+                        com.example.models.FallbackDecision.CANCEL -> {
+                            addLog("🛑 User cancelled batch predictions.", "WARN")
+                            _currentActivePredictingIndex.value = -1
+                            _isAgentRunning.value = false
+                            return@launch
+                        }
+                    }
                 }
+
+                val prediction = finalPrediction ?: generateSmartMockPrediction(item.homeTeam, item.awayTeam)
 
                 _batchMatchItems.update { currentList ->
                     currentList.mapIndexed { idx, curItem ->
@@ -1088,6 +1257,12 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                     val itemsList = mutableListOf<com.example.models.PredictedBetItem>()
                     for (j in 0 until itemsArray.length()) {
                         val itObj = itemsArray.getJSONObject(j)
+                        val homeSc = if (itObj.has("homeScore") && !itObj.isNull("homeScore")) itObj.optInt("homeScore") else null
+                        val awaySc = if (itObj.has("awayScore") && !itObj.isNull("awayScore")) itObj.optInt("awayScore") else null
+                        val mStatus = if (itObj.has("matchStatus") && !itObj.isNull("matchStatus")) itObj.optString("matchStatus") else null
+                        val outStatus = itObj.optString("outcomeStatus", "PENDING")
+                        val outExpl = if (itObj.has("outcomeExplanation")) itObj.optString("outcomeExplanation") else null
+
                         itemsList.add(
                             com.example.models.PredictedBetItem(
                                 matchId = itObj.optInt("matchId"),
@@ -1101,7 +1276,12 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                                 confidence = itObj.optInt("confidence", 75),
                                 rationale = itObj.optString("rationale"),
                                 simulatedOdds = itObj.optString("simulatedOdds", "1.75"),
-                                betTypeCategory = itObj.optString("betTypeCategory", extractBetTypeCategory(itObj.optString("recommendedBet")))
+                                betTypeCategory = itObj.optString("betTypeCategory", extractBetTypeCategory(itObj.optString("recommendedBet"))),
+                                matchStatus = mStatus,
+                                homeScore = homeSc,
+                                awayScore = awaySc,
+                                outcomeStatus = outStatus,
+                                outcomeExplanation = outExpl
                             )
                         )
                     }
@@ -1121,14 +1301,22 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                                 estimatedPayout = obj.optDouble("estimatedPayout", 0.0),
                                 potentialProfit = obj.optDouble("potentialProfit", 0.0),
                                 targetMin = obj.optDouble("targetMin", _moneyRange.value.start.toDouble()).toFloat(),
-                                targetMax = obj.optDouble("targetMax", _moneyRange.value.endInclusive.toDouble()).toFloat()
+                                targetMax = obj.optDouble("targetMax", _moneyRange.value.endInclusive.toDouble()).toFloat(),
+                                overallStatus = obj.optString("overallStatus", "PENDING"),
+                                wonItemsCount = obj.optInt("wonItemsCount", itemsList.count { it.outcomeStatus == "WON" }),
+                                lostItemsCount = obj.optInt("lostItemsCount", itemsList.count { it.outcomeStatus == "LOST" }),
+                                voidItemsCount = obj.optInt("voidItemsCount", itemsList.count { it.outcomeStatus == "VOID" }),
+                                pendingItemsCount = obj.optInt("pendingItemsCount", itemsList.count { it.outcomeStatus == "PENDING" }),
+                                lastCheckedTimestamp = if (obj.has("lastCheckedTimestamp")) obj.optLong("lastCheckedTimestamp") else null
                             )
                         )
                     }
                 }
-                _savedSlipsHistory.value = list
+                _savedSlipsHistory.value = list.distinctBy { s ->
+                    "${s.items.map { "${it.matchId}_${it.recommendedBet}" }.sorted().joinToString(",")}_${s.timestamp / 120000}"
+                }
                 if (_currentSlip.value == null && list.isNotEmpty()) {
-                    _currentSlip.value = list.first()
+                    _currentSlip.value = _savedSlipsHistory.value.firstOrNull()
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -1154,6 +1342,12 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                 obj.put("potentialProfit", slip.potentialProfit)
                 obj.put("targetMin", slip.targetMin)
                 obj.put("targetMax", slip.targetMax)
+                obj.put("overallStatus", slip.overallStatus)
+                obj.put("wonItemsCount", slip.wonItemsCount)
+                obj.put("lostItemsCount", slip.lostItemsCount)
+                obj.put("voidItemsCount", slip.voidItemsCount)
+                obj.put("pendingItemsCount", slip.pendingItemsCount)
+                slip.lastCheckedTimestamp?.let { obj.put("lastCheckedTimestamp", it) }
 
                 val itemsArray = JSONArray()
                 slip.items.forEach { item ->
@@ -1170,6 +1364,11 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
                     itObj.put("rationale", item.rationale)
                     itObj.put("simulatedOdds", item.simulatedOdds)
                     itObj.put("betTypeCategory", item.betTypeCategory)
+                    item.matchStatus?.let { itObj.put("matchStatus", it) }
+                    item.homeScore?.let { itObj.put("homeScore", it) }
+                    item.awayScore?.let { itObj.put("awayScore", it) }
+                    itObj.put("outcomeStatus", item.outcomeStatus)
+                    item.outcomeExplanation?.let { itObj.put("outcomeExplanation", it) }
                     itemsArray.put(itObj)
                 }
                 obj.put("items", itemsArray)
@@ -1263,6 +1462,24 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
             return _currentSlip.value
         }
 
+        // Prevent creating duplicate slip if current slip already matches exactly
+        val current = _currentSlip.value
+        if (current != null && current.items.size == finishedItems.size &&
+            current.items.map { "${it.matchId}_${it.recommendedBet}" } == finishedItems.map { "${it.matchId}_${it.recommendedBet}" }
+        ) {
+            return current
+        }
+
+        val existingRecent = _savedSlipsHistory.value.firstOrNull { slip ->
+            slip.items.size == finishedItems.size &&
+            slip.items.map { "${it.matchId}_${it.recommendedBet}" } == finishedItems.map { "${it.matchId}_${it.recommendedBet}" } &&
+            (System.currentTimeMillis() - slip.timestamp) < 180_000
+        }
+        if (existingRecent != null) {
+            _currentSlip.value = existingRecent
+            return existingRecent
+        }
+
         val totalMatches = finishedItems.size
         val avgConf = if (totalMatches > 0) finishedItems.map { it.confidence }.average().toInt() else 0
         var totalOdds = 1.0
@@ -1296,7 +1513,13 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
         )
 
         _currentSlip.value = newSlip
-        _savedSlipsHistory.update { (listOf(newSlip) + it).distinctBy { s -> s.slipId }.filter { s -> s.items.isNotEmpty() } }
+        _savedSlipsHistory.update { existingList ->
+            (listOf(newSlip) + existingList)
+                .filter { it.items.isNotEmpty() }
+                .distinctBy { s ->
+                    "${s.items.map { "${it.matchId}_${it.recommendedBet}" }.sorted().joinToString(",")}_${s.timestamp / 120000}"
+                }
+        }
         persistSlips()
 
         return newSlip
@@ -1314,6 +1537,162 @@ class PredictorViewModel(application: Application) : AndroidViewModel(applicatio
         _savedSlipsHistory.value = emptyList()
         _currentSlip.value = null
         prefs.edit().remove("saved_prediction_slips_json").apply()
+    }
+
+    private val _isCheckingOutcomes = MutableStateFlow(false)
+    val isCheckingOutcomes: StateFlow<Boolean> = _isCheckingOutcomes.asStateFlow()
+
+    fun verifySlipOutcomes(slipId: String, simulateIfMissing: Boolean = false) {
+        viewModelScope.launch {
+            _isCheckingOutcomes.value = true
+            try {
+                val targetSlip = _savedSlipsHistory.value.find { it.slipId == slipId } ?: return@launch
+                val loadedMatches = allLoadedMatches
+                val scoreMap = mutableMapOf<Int, Triple<Int, Int, String>>()
+
+                targetSlip.items.forEach { item ->
+                    val matchedFixture = loadedMatches.find { it.id == item.matchId }
+                        ?: loadedMatches.find {
+                            it.homeTeam.equals(item.homeTeam, ignoreCase = true) ||
+                            it.awayTeam.equals(item.awayTeam, ignoreCase = true)
+                        }
+
+                    if (matchedFixture != null && matchedFixture.homeScore != null && matchedFixture.awayScore != null) {
+                        scoreMap[item.matchId] = Triple(matchedFixture.homeScore, matchedFixture.awayScore, matchedFixture.status)
+                    } else if (item.homeScore != null && item.awayScore != null) {
+                        scoreMap[item.matchId] = Triple(item.homeScore, item.awayScore, item.matchStatus ?: "FT")
+                    } else if (simulateIfMissing) {
+                        val sim = com.example.prediction.PredictionOutcomeEvaluator.generateSimulatedScore(item)
+                        scoreMap[item.matchId] = sim
+                    }
+                }
+
+                val evaluated = com.example.prediction.PredictionOutcomeEvaluator.evaluateSlip(targetSlip, scoreMap)
+                _savedSlipsHistory.update { list ->
+                    list.map { if (it.slipId == slipId) evaluated else it }
+                }
+                if (_currentSlip.value?.slipId == slipId) {
+                    _currentSlip.value = evaluated
+                }
+                persistSlips()
+            } finally {
+                _isCheckingOutcomes.value = false
+            }
+        }
+    }
+
+    fun verifyAllSavedSlips(simulateIfMissing: Boolean = false) {
+        viewModelScope.launch {
+            _isCheckingOutcomes.value = true
+            try {
+                val loadedMatches = allLoadedMatches
+                _savedSlipsHistory.update { list ->
+                    list.map { slip ->
+                        val scoreMap = mutableMapOf<Int, Triple<Int, Int, String>>()
+                        slip.items.forEach { item ->
+                            val matched = loadedMatches.find { it.id == item.matchId }
+                                ?: loadedMatches.find {
+                                    it.homeTeam.equals(item.homeTeam, ignoreCase = true) ||
+                                    it.awayTeam.equals(item.awayTeam, ignoreCase = true)
+                                }
+                            if (matched != null && matched.homeScore != null && matched.awayScore != null) {
+                                scoreMap[item.matchId] = Triple(matched.homeScore, matched.awayScore, matched.status)
+                            } else if (item.homeScore != null && item.awayScore != null) {
+                                scoreMap[item.matchId] = Triple(item.homeScore, item.awayScore, item.matchStatus ?: "FT")
+                            } else if (simulateIfMissing) {
+                                scoreMap[item.matchId] = com.example.prediction.PredictionOutcomeEvaluator.generateSimulatedScore(item)
+                            }
+                        }
+                        com.example.prediction.PredictionOutcomeEvaluator.evaluateSlip(slip, scoreMap)
+                    }
+                }
+                _currentSlip.value?.let { curr ->
+                    _currentSlip.value = _savedSlipsHistory.value.find { it.slipId == curr.slipId }
+                }
+                persistSlips()
+            } finally {
+                _isCheckingOutcomes.value = false
+            }
+        }
+    }
+
+    fun manuallySetMatchScore(slipId: String, matchId: Int, homeScore: Int, awayScore: Int, status: String = "FT") {
+        val slip = _savedSlipsHistory.value.find { it.slipId == slipId } ?: return
+        val scoreMap = mapOf(matchId to Triple(homeScore, awayScore, status))
+        val updated = com.example.prediction.PredictionOutcomeEvaluator.evaluateSlip(slip, scoreMap)
+        _savedSlipsHistory.update { list ->
+            list.map { if (it.slipId == slipId) updated else it }
+        }
+        if (_currentSlip.value?.slipId == slipId) {
+            _currentSlip.value = updated
+        }
+        persistSlips()
+    }
+
+    fun resetSlipOutcomes(slipId: String) {
+        val slip = _savedSlipsHistory.value.find { it.slipId == slipId } ?: return
+        val resetItems = slip.items.map {
+            it.copy(
+                homeScore = null,
+                awayScore = null,
+                matchStatus = null,
+                outcomeStatus = "PENDING",
+                outcomeExplanation = null
+            )
+        }
+        val resetSlip = slip.copy(
+            items = resetItems,
+            overallStatus = "PENDING",
+            wonItemsCount = 0,
+            lostItemsCount = 0,
+            voidItemsCount = 0,
+            pendingItemsCount = resetItems.size,
+            lastCheckedTimestamp = null
+        )
+        _savedSlipsHistory.update { list ->
+            list.map { if (it.slipId == slipId) resetSlip else it }
+        }
+        if (_currentSlip.value?.slipId == slipId) {
+            _currentSlip.value = resetSlip
+        }
+        persistSlips()
+    }
+
+    fun exportSlipsAsFormattedText(): String {
+        val slips = _savedSlipsHistory.value
+        if (slips.isEmpty()) return "No bet slips saved in history."
+        val sb = StringBuilder()
+        sb.append("📋 FOOTBALL AI PREDICTION VAULT EXPORT\n")
+        sb.append("Generated: ${SimpleDateFormat("MMM dd, yyyy HH:mm", Locale.getDefault()).format(Date())}\n")
+        sb.append("Total Slips: ${slips.size}\n\n")
+
+        slips.forEachIndexed { sIdx, slip ->
+            sb.append("══════════════════════════════════════\n")
+            sb.append("SLIP #${sIdx + 1}: [${slip.slipId}] (${slip.dateString})\n")
+            sb.append("Status: ${slip.overallStatus} | Combined Odds: @${slip.totalCombinedOdds} | Avg Conf: ${slip.averageConfidence}%\n")
+            if (slip.wonItemsCount > 0 || slip.lostItemsCount > 0) {
+                sb.append("Outcome: ${slip.wonItemsCount} Won • ${slip.lostItemsCount} Lost • ${slip.pendingItemsCount} Pending\n")
+            }
+            sb.append("──────────────────────────────────────\n")
+            slip.items.forEachIndexed { i, item ->
+                val outcomeTag = when (item.outcomeStatus) {
+                    "WON" -> "[✓ WON]"
+                    "LOST" -> "[✗ LOST]"
+                    "VOID" -> "[— VOID]"
+                    else -> "[⏳ PENDING]"
+                }
+                sb.append("${i + 1}. ${item.homeTeam} vs ${item.awayTeam} $outcomeTag\n")
+                sb.append("   ▶ Pick: [${item.betTypeCategory}] ${item.recommendedBet} (@${item.simulatedOdds})\n")
+                if (item.homeScore != null && item.awayScore != null) {
+                    sb.append("   ▶ Score: ${item.homeScore} - ${item.awayScore} (${item.matchStatus ?: "FT"})\n")
+                }
+                if (!item.outcomeExplanation.isNullOrBlank()) {
+                    sb.append("   ▶ Result Check: ${item.outcomeExplanation}\n")
+                }
+            }
+            sb.append("\n")
+        }
+        return sb.toString()
     }
 
     fun selectSlip(slip: com.example.models.SavedPredictionSlip) {
